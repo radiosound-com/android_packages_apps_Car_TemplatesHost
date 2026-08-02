@@ -69,6 +69,12 @@ adb shell am start -W -n com.android.car.libraries.templates.conformance/android
 Supported modes are `grid`, `long-message`, `sign-in`, `tabs`, `sections`,
 `place-map`, `route-preview`, `media`, `list`, `pane`, and `message`.
 
+After installing the conformance APK, the complete AVD matrix is:
+
+```sh
+./scripts/check-conformance-matrix.sh
+```
+
 The remaining parity work is device- and app-driven: richer icon/span
 rendering, virtualized remote list sections, voice/microphone integration,
 media-host tests, and pixel-level comparisons on additional display profiles.
