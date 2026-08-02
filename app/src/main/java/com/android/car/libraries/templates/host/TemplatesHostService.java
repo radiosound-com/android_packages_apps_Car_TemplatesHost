@@ -9,6 +9,7 @@ import android.content.ServiceConnection;
 import android.content.res.Configuration;
 import android.graphics.Insets;
 import android.graphics.Rect;
+import android.graphics.drawable.Drawable;
 import android.hardware.display.DisplayManager;
 import android.media.AudioFormat;
 import android.media.AudioRecord;
@@ -84,6 +85,7 @@ public final class TemplatesHostService extends Service {
 
     private final Handler main = new Handler(Looper.getMainLooper());
     private final Map<String, RendererSession> sessions = new HashMap<>();
+    private RendererSession inputSession;
     private final IRendererService.Stub rendererBinder = new IRendererService.Stub() {
         @Override
         public boolean initialize(ICarAppActivity activity, ComponentName component, int displayId) {
@@ -256,6 +258,33 @@ public final class TemplatesHostService extends Service {
             }
         }
 
+        void startInput() {
+            if (inputSession == this) return;
+            if (inputSession != null) {
+                try {
+                    inputSession.activity.onStopInput();
+                } catch (RemoteException e) {
+                    Log.e(TAG, "Unable to stop previous car search input", e);
+                }
+            }
+            inputSession = this;
+            try {
+                activity.onStartInput();
+            } catch (RemoteException e) {
+                Log.e(TAG, "Unable to start car search input", e);
+            }
+        }
+
+        void stopInput() {
+            if (inputSession != this) return;
+            inputSession = null;
+            try {
+                activity.onStopInput();
+            } catch (RemoteException e) {
+                Log.e(TAG, "Unable to stop car search input", e);
+            }
+        }
+
         void onMapScroll(float distanceX, float distanceY) {
             if (appSurfaceCallback == null) return;
             try {
@@ -308,6 +337,14 @@ public final class TemplatesHostService extends Service {
         }
 
         void terminate() {
+            if (inputSession == this) {
+                inputSession = null;
+                try {
+                    activity.onStopInput();
+                } catch (RemoteException e) {
+                    Log.e(TAG, "Unable to stop terminated car search input", e);
+                }
+            }
             if (surfaceHost != null) {
                 surfaceHost.release();
                 surfaceHost = null;
@@ -513,10 +550,18 @@ public final class TemplatesHostService extends Service {
             // density (120 dpi) to the car app's map surface. Passing the
             // wrapper value makes OsmAnd scale map labels roughly twice as large.
             int surfaceDensityDpi = displayContext.getResources().getDisplayMetrics().densityDpi;
-            rootView = new HostRootView(displayContext, surfaceDensityDpi, this);
+            Drawable appIcon = null;
+            try {
+                appIcon = getPackageManager().getApplicationIcon(component.getPackageName());
+            } catch (android.content.pm.PackageManager.NameNotFoundException ignored) {
+                // A renderer client may disappear between the handshake and
+                // surface creation; the host can still render without its icon.
+            }
+            rootView = new HostRootView(displayContext, surfaceDensityDpi, this, appIcon);
             rootView.setWindowInsets(windowInsets, stableInsets);
             surfaceHost = new SurfaceControlViewHost(displayContext, display, wrapper.getHostToken());
-            surfaceHost.setView(rootView, Math.max(1, wrapper.getWidth()), Math.max(1, wrapper.getHeight()));
+            surfaceHost.setView(rootView, Math.max(1, wrapper.getWidth()),
+                    Math.max(1, wrapper.getHeight()));
             try {
                 activity.setSurfacePackage(Bundleable.create(surfaceHost.getSurfacePackage()));
             } catch (RemoteException | BundlerException e) {
@@ -628,6 +673,14 @@ public final class TemplatesHostService extends Service {
                     android.view.inputmethod.EditorInfo editorInfo) {
                 searchEditorInfo = editorInfo == null
                         ? new android.view.inputmethod.EditorInfo() : editorInfo;
+                if (searchEditorInfo.inputType == 0) {
+                    searchEditorInfo.inputType = android.text.InputType.TYPE_CLASS_TEXT;
+                }
+                searchEditorInfo.imeOptions =
+                        android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH;
+                if (searchEditorInfo.hintText == null) {
+                    searchEditorInfo.hintText = "Search places";
+                }
                 return inputConnection;
             }
         }

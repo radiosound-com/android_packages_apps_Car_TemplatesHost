@@ -26,9 +26,12 @@ The current renderer covers every concrete AndroidX Car App 1.7 template type:
   invalidation, lifecycle recovery, content limits, and host callbacks
 
 The host targets Android API 30 and newer. It is designed to be installed as a
-privileged system app with the package name
+product privileged app with the package name
 `com.android.car.libraries.templates.host`, matching the AOSP Car Templates
-Host permission declaration.
+Host permission and feature declaration. The product integration requests the
+cluster, navigation-manager, boot, and foreground-service permissions used by
+the AOSP host contract; the product's privapp allowlist grants the car-specific
+permissions.
 
 ## Build
 

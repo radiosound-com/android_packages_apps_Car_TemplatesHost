@@ -70,6 +70,9 @@ public final class ConformanceCarAppService extends CarAppService {
     private static final class ConformanceScreen extends Screen {
         private String mode;
         private String activeTab = "one";
+        private int clickedGridItem = -1;
+        private String selectedSearchRow = "";
+        private String searchText = "";
 
         ConformanceScreen(androidx.car.app.CarContext context, String mode) {
             super(context);
@@ -84,6 +87,8 @@ public final class ConformanceCarAppService extends CarAppService {
         @Override
         public Template onGetTemplate() {
             switch (mode) {
+                case "interaction-grid": return interactionGrid();
+                case "interaction-search": return interactionSearch();
                 case "long-message": return longMessage();
                 case "sign-in": return signIn();
                 case "tabs": return tabs();
@@ -132,6 +137,23 @@ public final class ConformanceCarAppService extends CarAppService {
                     .setSingleList(items.build()).setItemSize(GridTemplate.ITEM_SIZE_MEDIUM).build();
         }
 
+        private GridTemplate interactionGrid() {
+            ItemList.Builder items = new ItemList.Builder();
+            for (int i = 1; i <= 20; i++) {
+                final int item = i;
+                String title = clickedGridItem == item ? "Selected " + item : "Tile " + item;
+                items.addItem(new GridItem.Builder().setTitle(title)
+                        .setText("Grid item").setImage(CarIcon.APP_ICON).setLoading(false)
+                        .setOnClickListener(() -> {
+                            clickedGridItem = item;
+                            invalidate();
+                        }).build());
+            }
+            String title = clickedGridItem < 0 ? "Grid interaction" : "Grid item tapped";
+            return new GridTemplate.Builder().setTitle(title)
+                    .setSingleList(items.build()).setItemSize(GridTemplate.ITEM_SIZE_MEDIUM).build();
+        }
+
         private ListTemplate list() {
             return new ListTemplate.Builder().setTitle("List template")
                     .setSingleList(rows()).build();
@@ -155,6 +177,39 @@ public final class ConformanceCarAppService extends CarAppService {
                 @Override public void onSearchTextChanged(String text) { invalidate(); }
                 @Override public void onSearchSubmitted(String text) { invalidate(); }
             }).setSearchHint("Search places").setItemList(rows()).build();
+        }
+
+        private SearchTemplate interactionSearch() {
+            return new SearchTemplate.Builder(new SearchTemplate.SearchCallback() {
+                @Override public void onSearchTextChanged(String text) {
+                    searchText = text == null ? "" : text;
+                    invalidate();
+                }
+                @Override public void onSearchSubmitted(String text) {
+                    searchText = text == null ? "" : text;
+                    invalidate();
+                }
+            }).setSearchHint("Search places")
+                    .setInitialSearchText(searchText)
+                    .setShowKeyboardByDefault(false)
+                    .setItemList(interactionRows()).build();
+        }
+
+        private ItemList interactionRows() {
+            ItemList.Builder rows = new ItemList.Builder();
+            for (int i = 1; i <= 18; i++) {
+                final int row = i;
+                String title = selectedSearchRow.equals("Row " + row)
+                        ? "Selected Row " + row : "Row " + row;
+                rows.addItem(new Row.Builder().setTitle(title)
+                        .addText("Search result " + row
+                                + (searchText.isEmpty() ? "" : " for " + searchText))
+                        .setOnClickListener(() -> {
+                            selectedSearchRow = "Row " + row;
+                            invalidate();
+                        }).build());
+            }
+            return rows.build();
         }
 
         private LongMessageTemplate longMessage() {

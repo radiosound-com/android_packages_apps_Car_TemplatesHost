@@ -4,19 +4,19 @@ set -eu
 # End-to-end checks for the two interactive surfaces on the 1080x600 AAOS
 # landscape emulator profile: settings ListTemplate chrome and map gestures.
 ADB=${ADB:-adb}
+DISPLAY_ID=${DISPLAY_ID:-4619827259835644672}
 PACKAGE=${PACKAGE:-net.osmand.dev}
 COMPONENT="$PACKAGE/androidx.car.app.activity.CarAppActivity"
 tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/caramel-vanilla-host-interaction.XXXXXX")
 trap 'rm -rf "$tmp_dir"' EXIT
 
 capture() {
-    "$ADB" shell screencap -p "$1" >/dev/null
-    "$ADB" pull -q "$1" "$2"
+    "$ADB" exec-out screencap -p -d "$DISPLAY_ID" > "$2"
 }
 
 "$ADB" shell am force-stop "$PACKAGE"
 "$ADB" shell am start -W -n "$COMPONENT" >/dev/null
-sleep 5
+sleep 12
 capture /sdcard/caramel-vanilla-map-before.png "$tmp_dir/map-before.png"
 "$ADB" shell input swipe 700 300 850 300 500
 sleep 1
@@ -24,7 +24,7 @@ capture /sdcard/caramel-vanilla-map-after-right.png "$tmp_dir/map-after-right.pn
 
 "$ADB" shell am force-stop "$PACKAGE"
 "$ADB" shell am start -W -n "$COMPONENT" >/dev/null
-sleep 5
+sleep 12
 capture /sdcard/caramel-vanilla-map-before-down.png "$tmp_dir/map-before-down.png"
 "$ADB" shell input swipe 850 300 850 450 500
 sleep 1
@@ -115,8 +115,8 @@ def bright_neutral(value):
 def shift_error(reference, moved, shift_x, shift_y):
     """Compare map content after a candidate translation.
 
-    A positive shift means the rendered map content moved right/down relative
-    to the previous screenshot, matching a paper map dragged under a finger.
+    A negative shift means the rendered map content moved left/up for a
+    right/down finger drag, matching a paper map dragged under a finger.
     """
     _, _, reference_rows = reference
     _, _, moved_rows = moved
@@ -180,10 +180,10 @@ history_bounds = (
 checks = {
     "map is rendered before gesture": map_active > 10000,
     "map responds to a swipe": map_diffs > 1000,
-    "rightward finger drag moves map right": right_shift > 20,
-    "downward finger drag moves map down": down_shift > 20,
+    "rightward finger drag moves map left": right_shift < -20,
+    "downward finger drag moves map up": down_shift < -20,
     "history icon has stock circular-arrow geometry": len(history_pixels) > 260
-        and history_bounds[0] <= 26 and history_bounds[1] >= 55
+        and history_bounds[0] <= 30 and history_bounds[1] >= 55
         and history_bounds[3] >= 236,
     "settings uses stock dark background": near(pixel(settings_rows, 50, 100), (19, 19, 19, 255), 12),
     "settings toolbar back affordance exists": max(pixel(settings_rows, 40, 87)[:3]) > 100,

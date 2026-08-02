@@ -4,6 +4,10 @@
         android:required="true" />
 
     <uses-permission android:name="android.car.permission.TEMPLATE_RENDERER" />
+    <uses-permission android:name="android.car.permission.CAR_DISPLAY_IN_CLUSTER" />
+    <uses-permission android:name="android.car.permission.CAR_NAVIGATION_MANAGER" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
     <application
