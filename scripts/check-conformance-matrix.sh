@@ -6,7 +6,7 @@ PACKAGE=${PACKAGE:-com.android.car.libraries.templates.conformance}
 COMPONENT="$PACKAGE/androidx.car.app.activity.CarAppActivity"
 HOST=${HOST:-com.android.car.libraries.templates.host}
 
-for mode in grid long-message sign-in tabs sections place-map route-preview media list pane message; do
+for mode in grid long-message sign-in tabs sections place-map route-preview media list pane message search; do
     "$ADB" shell am force-stop "$PACKAGE"
     # Restarting the renderer makes every mode a fresh handshake/surface test.
     "$ADB" shell am force-stop "$HOST" 2>/dev/null || true

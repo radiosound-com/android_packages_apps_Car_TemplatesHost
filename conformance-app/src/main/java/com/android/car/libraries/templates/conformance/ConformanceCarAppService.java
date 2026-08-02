@@ -23,6 +23,7 @@ import androidx.car.app.model.PlaceListMapTemplate;
 import androidx.car.app.model.Row;
 import androidx.car.app.model.RowSection;
 import androidx.car.app.model.SectionedItemTemplate;
+import androidx.car.app.model.SearchTemplate;
 import androidx.car.app.model.Tab;
 import androidx.car.app.model.TabContents;
 import androidx.car.app.model.TabTemplate;
@@ -93,6 +94,7 @@ public final class ConformanceCarAppService extends CarAppService {
                 case "list": return list();
                 case "pane": return pane();
                 case "message": return message();
+                case "search": return search();
                 default: return grid();
             }
         }
@@ -146,6 +148,13 @@ public final class ConformanceCarAppService extends CarAppService {
         private MessageTemplate message() {
             return new MessageTemplate.Builder("A message template for renderer testing.")
                     .setTitle("Message template").addAction(action("Dismiss")).build();
+        }
+
+        private SearchTemplate search() {
+            return new SearchTemplate.Builder(new SearchTemplate.SearchCallback() {
+                @Override public void onSearchTextChanged(String text) { invalidate(); }
+                @Override public void onSearchSubmitted(String text) { invalidate(); }
+            }).setSearchHint("Search places").setItemList(rows()).build();
         }
 
         private LongMessageTemplate longMessage() {
