@@ -37,6 +37,7 @@ profile used by Caramel Vanilla:
 
 ```sh
 ./scripts/check-stock-layout.sh
+./scripts/check-settings-and-map.sh
 ```
 
 This is a minimal compatible renderer, not a claim of full parity with the

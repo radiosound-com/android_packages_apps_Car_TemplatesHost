@@ -11,6 +11,7 @@ import android.graphics.Typeface;
 import android.view.MotionEvent;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
+import android.view.VelocityTracker;
 import android.widget.FrameLayout;
 
 import androidx.annotation.Nullable;
@@ -121,19 +122,28 @@ final class HostRootView extends FrameLayout {
 
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final TemplatesHostService.RendererSession session;
-        private final float density;
         private final List<Hit> hits = new ArrayList<>();
         private TemplateWrapper wrapper;
         private boolean mapMode;
         private Insets windowInsets = Insets.NONE;
         private Insets stableInsets = Insets.NONE;
         private String toast;
+        private float listScrollOffset;
+        private float downX;
+        private float downY;
+        private float lastX;
+        private float lastY;
+        private boolean dragging;
+        private boolean listDragging;
+        private boolean backPressed;
+        private Hit pressedHit;
+        private VelocityTracker velocityTracker;
+        private float listMaxScroll;
 
         TemplateCanvasView(Context context, TemplatesHostService.RendererSession session,
                            int densityDpi) {
             super(context);
             this.session = session;
-            density = densityDpi / 160f;
             setFocusable(true);
             paint.setTypeface(Typeface.create("sans", Typeface.NORMAL));
         }
@@ -144,6 +154,9 @@ final class HostRootView extends FrameLayout {
         }
 
         void render(TemplateWrapper wrapper) {
+            if (this.wrapper != wrapper) {
+                listScrollOffset = 0;
+            }
             this.wrapper = wrapper;
             invalidate();
         }
@@ -245,7 +258,7 @@ final class HostRootView extends FrameLayout {
             drawAppHeader(canvas, template.getTitle(), left, top, right);
             drawRows(canvas, template.getItemList(), left, top + dp(84), right, true);
             drawMapActionStrip(canvas, template.getActionStrip(), top + dp(42));
-            drawMapControls(canvas, top, bottom);
+            drawMapActionStack(canvas, template.getMapActionStrip(), top, bottom);
             drawToast(canvas);
         }
 
@@ -268,25 +281,112 @@ final class HostRootView extends FrameLayout {
             text(canvas, "Map surface supplied to the app", left + dp(32),
                     top + dp(88), dp(19), MUTED);
             drawMapActionStrip(canvas, template.getActionStrip(), panelTop() + dp(42));
-            drawMapControls(canvas, panelTop(), bottom);
+            drawMapActionStack(canvas, template.getMapActionStrip(), panelTop(), bottom);
             drawToast(canvas);
         }
 
         private void drawListTemplate(Canvas canvas, ListTemplate template) {
-            drawPanel(canvas, 24, 20, Math.min(getWidth() - 24, 620), getHeight() - 28);
-            title(canvas, template.getTitle(), 48, 62);
+            float toolbarTop = contentTop();
+            drawToolbar(canvas, template, toolbarTop);
+            float listTop = toolbarTop + dp(115) - listScrollOffset;
+            float listBottom = contentBottom();
+            float contentEnd;
+            canvas.save();
+            canvas.clipRect(0, toolbarTop + dp(78), getWidth(), listBottom);
             if (template.getSingleList() != null) {
-                drawItems(canvas, template.getSingleList(), 48, 94, Math.min(getWidth() - 56, 570));
+                drawSectionHeader(canvas, template.getTitle(), listTop);
+                contentEnd = drawSettingsRows(canvas, template.getSingleList(), listTop + dp(17));
             } else {
-                int y = 94;
+                contentEnd = listTop;
                 for (SectionedItemList section : template.getSectionedLists()) {
-                    text(canvas, textOf(section.getHeader()), 48, y, 15, ACCENT);
-                    y += 30;
-                    y = drawItems(canvas, section.getItemList(), 48, y, Math.min(getWidth() - 56, 570));
+                    drawSectionHeader(canvas, section.getHeader(), contentEnd);
+                    contentEnd = drawSettingsRows(canvas, section.getItemList(), contentEnd + dp(17));
                 }
             }
-            drawAction(canvas, template.getHeaderAction(), 48, 28, 210, 72);
-            drawActionStrip(canvas, template.getActionStrip());
+            canvas.restore();
+            if (listScrollOffset > 0) {
+                drawScrollChevron(canvas, dp(42), toolbarTop + dp(120), true);
+            }
+            if (contentEnd > listBottom) {
+                drawScrollChevron(canvas, dp(42), listBottom - dp(42), false);
+            }
+            listMaxScroll = Math.max(0, contentEnd + listScrollOffset - listBottom);
+            drawToast(canvas);
+        }
+
+        private void drawToolbar(Canvas canvas, ListTemplate template, float top) {
+            boolean back = template.getHeaderAction() != null
+                    && template.getHeaderAction().getType() == Action.TYPE_BACK;
+            if (back) {
+                drawBackArrow(canvas, dp(53), top + dp(40));
+                addBackHit(top);
+                text(canvas, "Settings", dp(104), top + dp(51), dp(27), TEXT);
+            } else {
+                text(canvas, textOf(template.getTitle()), dp(32), top + dp(51), dp(27), TEXT);
+            }
+        }
+
+        private void drawSectionHeader(Canvas canvas, @Nullable CarText header, float baseline) {
+            textBold(canvas, textOf(header), dp(88), baseline, dp(24), TEXT);
+            drawScrollChevron(canvas, dp(42), baseline - dp(2), true);
+        }
+
+        private float drawSettingsRows(Canvas canvas, @Nullable ItemList list, float y) {
+            if (list == null) return y;
+            for (Item item : list.getItems()) {
+                if (!(item instanceof Row)) continue;
+                Row row = (Row) item;
+                float rowTop = y;
+                boolean hasText = !row.getTexts().isEmpty();
+                float rowHeight = hasText ? dp(112) : dp(62);
+                text(canvas, textOf(row.getTitle()), dp(88), rowTop + dp(40), dp(27),
+                        row.isEnabled() ? TEXT : MUTED);
+                    float textY = rowTop + dp(69);
+                for (CarText subtext : row.getTexts()) {
+                    textY = drawWrappedText(canvas, textOf(subtext), dp(88), textY,
+                            getWidth() - dp(175), dp(21), MUTED);
+                }
+                if (row.getToggle() != null) {
+                    drawToggle(canvas, getWidth() - dp(115),
+                            rowTop + (hasText ? dp(47) : dp(30)), row.getToggle().isChecked());
+                    if (row.getToggle().getOnCheckedChangeDelegate() != null) {
+                        addToggleHit(dp(70), rowTop, getWidth() - dp(70), rowTop + rowHeight,
+                                row.getToggle().getOnCheckedChangeDelegate(),
+                                row.getToggle().isChecked());
+                    }
+                }
+                if (row.getOnClickDelegate() != null) {
+                    addHit(dp(70), rowTop, getWidth() - dp(70), rowTop + rowHeight,
+                            row.getOnClickDelegate());
+                }
+                paint.setColor(DIVIDER);
+                canvas.drawRect(dp(88), rowTop + rowHeight - 1,
+                        getWidth() - dp(88), rowTop + rowHeight, paint);
+                y += rowHeight;
+            }
+            return y;
+        }
+
+        private float drawWrappedText(Canvas canvas, String value, float x, float y,
+                                      float maxWidth, float size, int color) {
+            if (value == null || value.isEmpty()) return y;
+            paint.setTextSize(size);
+            String line = "";
+            for (String word : value.split("\\s+")) {
+                String candidate = line.isEmpty() ? word : line + " " + word;
+                if (!line.isEmpty() && paint.measureText(candidate) > maxWidth) {
+                    text(canvas, line, x, y, size, color);
+                    y += dp(26);
+                    line = word;
+                } else {
+                    line = candidate;
+                }
+            }
+            if (!line.isEmpty()) {
+                text(canvas, line, x, y, size, color);
+                y += dp(26);
+            }
+            return y;
         }
 
         private void drawPaneTemplate(Canvas canvas, PaneTemplate template) {
@@ -412,6 +512,45 @@ final class HostRootView extends FrameLayout {
             }
         }
 
+        private void drawMapActionStack(Canvas canvas,
+                                        @Nullable androidx.car.app.model.ActionStrip strip,
+                                        float top, float bottom) {
+            if (strip == null) return;
+            List<Action> actions = strip.getActions();
+            float x = getWidth() - dp(53);
+            float center = top + (bottom - top) * .64f;
+            for (int i = 0; i < actions.size(); i++) {
+                Action action = actions.get(i);
+                float y = center + i * dp(92);
+                paint.setStyle(Paint.Style.FILL);
+                paint.setColor(PANEL);
+                canvas.drawCircle(x, y, dp(40), paint);
+                drawMapStackIcon(canvas, action, i, x, y);
+                addHit(x - dp(40), y - dp(40), x + dp(40), y + dp(40),
+                        action.getOnClickDelegate());
+            }
+        }
+
+        private void drawMapStackIcon(Canvas canvas, Action action, int index, float x, float y) {
+            paint.setColor(ICON);
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(dp(3));
+            if (action.getType() == Action.TYPE_PAN) {
+                canvas.drawLine(x - dp(13), y, x + dp(13), y, paint);
+                canvas.drawLine(x, y - dp(13), x, y + dp(13), paint);
+            } else if (index == 0) {
+                canvas.drawCircle(x, y, dp(11), paint);
+                canvas.drawLine(x - dp(17), y, x + dp(17), y, paint);
+                canvas.drawLine(x, y - dp(17), x, y + dp(17), paint);
+            } else if (index == 1) {
+                canvas.drawLine(x - dp(14), y, x + dp(14), y, paint);
+                canvas.drawLine(x, y - dp(14), x, y + dp(14), paint);
+            } else {
+                canvas.drawLine(x - dp(14), y, x + dp(14), y, paint);
+            }
+            paint.setStyle(Paint.Style.FILL);
+        }
+
         private void drawMapControls(Canvas canvas, float top, float bottom) {
             float x = getWidth() - dp(53);
             float center = top + (bottom - top) * .64f;
@@ -472,6 +611,66 @@ final class HostRootView extends FrameLayout {
             paint.setStyle(Paint.Style.FILL);
             canvas.drawRoundRect(left, top, right, bottom, dp(52), dp(52), paint);
             text(canvas, toast, left + dp(25), top + dp(58), dp(23), Color.rgb(55, 55, 55));
+        }
+
+        private void drawToggle(Canvas canvas, float centerX, float centerY, boolean checked) {
+            float width = dp(69);
+            float height = dp(32);
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(checked ? Color.WHITE : Color.rgb(83, 83, 83));
+            canvas.drawRoundRect(centerX - width / 2, centerY - height / 2,
+                    centerX + width / 2, centerY + height / 2, height / 2, height / 2, paint);
+            if (!checked) {
+                paint.setStyle(Paint.Style.STROKE);
+                paint.setStrokeWidth(dp(2));
+                paint.setColor(Color.rgb(155, 155, 155));
+                canvas.drawRoundRect(centerX - width / 2, centerY - height / 2,
+                        centerX + width / 2, centerY + height / 2, height / 2, height / 2, paint);
+            }
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(checked ? Color.rgb(45, 45, 45) : Color.rgb(180, 180, 180));
+            float thumb = dp(22);
+            float thumbX = checked ? centerX + width / 2 - thumb : centerX - width / 2 + thumb;
+            canvas.drawCircle(thumbX, centerY, dp(11), paint);
+        }
+
+        private void drawBackArrow(Canvas canvas, float x, float y) {
+            paint.setColor(Color.rgb(205, 205, 205));
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(dp(3));
+            paint.setStrokeCap(Paint.Cap.SQUARE);
+            canvas.drawLine(x + dp(10), y, x - dp(10), y, paint);
+            canvas.drawLine(x - dp(10), y, x, y - dp(10), paint);
+            canvas.drawLine(x - dp(10), y, x, y + dp(10), paint);
+            paint.setStrokeCap(Paint.Cap.BUTT);
+            paint.setStyle(Paint.Style.FILL);
+        }
+
+        private void drawScrollChevron(Canvas canvas, float x, float y, boolean up) {
+            paint.setColor(Color.rgb(105, 105, 105));
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(dp(3));
+            if (up) {
+                canvas.drawLine(x - dp(6), y + dp(5), x, y - dp(5), paint);
+                canvas.drawLine(x, y - dp(5), x + dp(6), y + dp(5), paint);
+            } else {
+                canvas.drawLine(x - dp(6), y - dp(5), x, y + dp(5), paint);
+                canvas.drawLine(x, y + dp(5), x + dp(6), y - dp(5), paint);
+            }
+            paint.setStyle(Paint.Style.FILL);
+        }
+
+        private void textBold(Canvas canvas, String value, float x, float y, float size, int color) {
+            paint.setColor(color);
+            paint.setStyle(Paint.Style.FILL);
+            paint.setTextSize(size);
+            paint.setTypeface(Typeface.create("sans", Typeface.BOLD));
+            canvas.drawText(value == null ? "" : value, x, y, paint);
+            paint.setTypeface(Typeface.create("sans", Typeface.NORMAL));
+        }
+
+        private void addBackHit(float top) {
+            hits.add(new Hit(new RectF(0, top, dp(90), top + dp(78)), true));
         }
 
         private void drawContentPanel(Canvas canvas, Template content, boolean overlay) {
@@ -576,6 +775,14 @@ final class HostRootView extends FrameLayout {
             if (delegate != null) hits.add(new Hit(new RectF(left, top, right, bottom), delegate));
         }
 
+        private void addToggleHit(float left, float top, float right, float bottom,
+                                  androidx.car.app.model.OnCheckedChangeDelegate delegate,
+                                  boolean checked) {
+            if (delegate != null) {
+                hits.add(new Hit(new RectF(left, top, right, bottom), delegate, checked));
+            }
+        }
+
         private void title(Canvas canvas, @Nullable CarText title, int x, int y) {
             text(canvas, textOf(title), x, y, 25, TEXT);
         }
@@ -668,23 +875,117 @@ final class HostRootView extends FrameLayout {
 
         @Override
         public boolean onTouchEvent(MotionEvent event) {
-            if (event.getAction() != MotionEvent.ACTION_UP) return true;
-            for (int i = hits.size() - 1; i >= 0; i--) {
-                Hit hit = hits.get(i);
-                if (hit.bounds.contains(event.getX(), event.getY())) {
-                    hit.delegate.sendClick(new OnDoneCallback() {});
-                    return true;
+            int action = event.getActionMasked();
+            if (action == MotionEvent.ACTION_DOWN) {
+                downX = lastX = event.getX();
+                downY = lastY = event.getY();
+                dragging = false;
+                listDragging = false;
+                pressedHit = findHit(event.getX(), event.getY());
+                backPressed = pressedHit != null && pressedHit.back;
+                if (pressedHit == null && wrapper != null
+                        && wrapper.getTemplate() instanceof ListTemplate
+                        && event.getY() >= contentTop() + dp(78)) {
+                    listDragging = true;
                 }
+                if (pressedHit == null && mapMode) {
+                    dragging = false;
+                }
+                velocityTracker = VelocityTracker.obtain();
+                velocityTracker.addMovement(event);
+                return true;
+            }
+            if (velocityTracker != null) {
+                velocityTracker.addMovement(event);
+            }
+            if (action == MotionEvent.ACTION_MOVE) {
+                float dx = event.getX() - lastX;
+                float dy = event.getY() - lastY;
+                if (Math.hypot(event.getX() - downX, event.getY() - downY) > dp(8)) {
+                    dragging = true;
+                }
+                if (pressedHit == null && listDragging) {
+                    listScrollOffset = Math.max(0, Math.min(listMaxScroll,
+                            listScrollOffset - dy));
+                    invalidate();
+                } else if (pressedHit == null && mapMode) {
+                    session.onMapScroll(dx, dy);
+                }
+                lastX = event.getX();
+                lastY = event.getY();
+                return true;
+            }
+            if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+                if (velocityTracker != null) {
+                    velocityTracker.computeCurrentVelocity(1000);
+                }
+                if (pressedHit == null && mapMode) {
+                    if (dragging && velocityTracker != null) {
+                        float vx = velocityTracker.getXVelocity();
+                        float vy = velocityTracker.getYVelocity();
+                        if (Math.hypot(vx, vy) > 100) {
+                            session.onMapFling(vx, vy);
+                        }
+                    } else if (!dragging && action == MotionEvent.ACTION_UP) {
+                        session.onMapClick(event.getX(), event.getY());
+                    }
+                } else if (!dragging && action == MotionEvent.ACTION_UP) {
+                    Hit hit = pressedHit;
+                    if (backPressed) {
+                        session.onBackPressed();
+                    } else if (hit != null && hit.bounds.contains(event.getX(), event.getY())) {
+                        if (hit.delegate != null) {
+                            hit.delegate.sendClick(new OnDoneCallback() {});
+                        } else if (hit.toggle != null) {
+                            hit.toggle.sendCheckedChange(!hit.checked, new OnDoneCallback() {});
+                        }
+                    }
+                }
+                if (velocityTracker != null) {
+                    velocityTracker.recycle();
+                    velocityTracker = null;
+                }
+                pressedHit = null;
+                return true;
             }
             return true;
+        }
+
+        private Hit findHit(float x, float y) {
+            for (int i = hits.size() - 1; i >= 0; i--) {
+                Hit hit = hits.get(i);
+                if (hit.bounds.contains(x, y)) return hit;
+            }
+            return null;
         }
 
         private static final class Hit {
             final RectF bounds;
             final androidx.car.app.model.OnClickDelegate delegate;
+            final androidx.car.app.model.OnCheckedChangeDelegate toggle;
+            final boolean checked;
+            final boolean back;
             Hit(RectF bounds, androidx.car.app.model.OnClickDelegate delegate) {
                 this.bounds = bounds;
                 this.delegate = delegate;
+                this.toggle = null;
+                this.checked = false;
+                this.back = false;
+            }
+            Hit(RectF bounds, androidx.car.app.model.OnCheckedChangeDelegate toggle,
+                boolean checked) {
+                this.bounds = bounds;
+                this.delegate = null;
+                this.toggle = toggle;
+                this.checked = checked;
+                this.back = false;
+            }
+            Hit(RectF bounds, boolean back) {
+                this.bounds = bounds;
+                this.delegate = null;
+                this.toggle = null;
+                this.checked = false;
+                this.back = back;
             }
         }
     }

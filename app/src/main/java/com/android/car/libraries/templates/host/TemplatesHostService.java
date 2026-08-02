@@ -229,6 +229,52 @@ public final class TemplatesHostService extends Service {
             }
         }
 
+        void onBackPressed() {
+            if (appManager != null) {
+                try {
+                    appManager.onBackPressed(new Done("onBackPressed"));
+                } catch (RemoteException e) {
+                    Log.e(TAG, "Unable to forward back press", e);
+                }
+            }
+        }
+
+        void onMapScroll(float distanceX, float distanceY) {
+            if (appSurfaceCallback == null) return;
+            try {
+                appSurfaceCallback.onScroll(distanceX, distanceY);
+            } catch (RemoteException e) {
+                Log.e(TAG, "Unable to forward map scroll", e);
+            }
+        }
+
+        void onMapFling(float velocityX, float velocityY) {
+            if (appSurfaceCallback == null) return;
+            try {
+                appSurfaceCallback.onFling(velocityX, velocityY);
+            } catch (RemoteException e) {
+                Log.e(TAG, "Unable to forward map fling", e);
+            }
+        }
+
+        void onMapScale(float focusX, float focusY, float scaleFactor) {
+            if (appSurfaceCallback == null) return;
+            try {
+                appSurfaceCallback.onScale(focusX, focusY, scaleFactor);
+            } catch (RemoteException e) {
+                Log.e(TAG, "Unable to forward map scale", e);
+            }
+        }
+
+        void onMapClick(float x, float y) {
+            if (appSurfaceCallback == null) return;
+            try {
+                appSurfaceCallback.onClick(x, y);
+            } catch (RemoteException e) {
+                Log.e(TAG, "Unable to forward map click", e);
+            }
+        }
+
         void onNewIntent(Intent intent, int newDisplayId) {
             Log.i(TAG, "session received intent for " + component);
             launchIntent = new Intent(intent);
@@ -368,16 +414,18 @@ public final class TemplatesHostService extends Service {
                 carApp.getManager(APP_HOST, new Done("getManager") {
                     @Override
                     public void onSuccess(@Nullable Bundleable response) {
-                        Object value = unwrap(response);
-                        if (value instanceof IAppManager) {
-                            appManager = (IAppManager) value;
-                            requestTemplate();
-                        } else if (value instanceof IBinder) {
-                            appManager = IAppManager.Stub.asInterface((IBinder) value);
-                            requestTemplate();
-                        } else {
-                            Log.w(TAG, "Car app returned no app manager: " + value);
-                        }
+                        main.post(() -> {
+                            Object value = unwrap(response);
+                            if (value instanceof IAppManager) {
+                                appManager = (IAppManager) value;
+                                requestTemplate();
+                            } else if (value instanceof IBinder) {
+                                appManager = IAppManager.Stub.asInterface((IBinder) value);
+                                requestTemplate();
+                            } else {
+                                Log.w(TAG, "Car app returned no app manager: " + value);
+                            }
+                        });
                     }
                 });
             } catch (RemoteException e) {
@@ -394,16 +442,18 @@ public final class TemplatesHostService extends Service {
                 appManager.getTemplate(new Done("getTemplate") {
                     @Override
                     public void onSuccess(@Nullable Bundleable response) {
-                        Object value = unwrap(response);
-                        if (value instanceof TemplateWrapper) {
-                            Log.i(TAG, "received template " + ((TemplateWrapper) value).getTemplate().getClass().getSimpleName());
-                            currentTemplate = (TemplateWrapper) value;
-                            if (rootView != null) {
-                                rootView.render(currentTemplate);
+                        main.post(() -> {
+                            Object value = unwrap(response);
+                            if (value instanceof TemplateWrapper) {
+                                Log.i(TAG, "received template " + ((TemplateWrapper) value).getTemplate().getClass().getSimpleName());
+                                currentTemplate = (TemplateWrapper) value;
+                                if (rootView != null) {
+                                    rootView.render(currentTemplate);
+                                }
+                            } else {
+                                Log.w(TAG, "Car app returned no template: " + value);
                             }
-                        } else {
-                            Log.w(TAG, "Car app returned no template: " + value);
-                        }
+                        });
                     }
                 });
             } catch (RemoteException e) {

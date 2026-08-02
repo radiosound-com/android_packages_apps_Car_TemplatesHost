@@ -5,8 +5,14 @@ set -eu
 # intentionally structural rather than pixel-for-pixel: the map changes as
 # the app moves, while the Automotive host chrome must keep these anchors.
 ADB=${ADB:-adb}
+PACKAGE=${PACKAGE:-net.osmand.dev}
+COMPONENT="$PACKAGE/androidx.car.app.activity.CarAppActivity"
 tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/caramel-vanilla-host.XXXXXX")
 trap 'rm -rf "$tmp_dir"' EXIT
+
+"$ADB" shell am force-stop "$PACKAGE"
+"$ADB" shell am start -W -n "$COMPONENT" >/dev/null
+sleep 5
 
 remote=/sdcard/caramel-vanilla-host-layout.png
 "$ADB" shell screencap -p "$remote" >/dev/null
