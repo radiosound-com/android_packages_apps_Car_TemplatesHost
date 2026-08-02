@@ -488,7 +488,12 @@ public final class TemplatesHostService extends Service {
                 return;
             }
             Context displayContext = createDisplayContext(display);
-            rootView = new HostRootView(displayContext, wrapper.getDensityDpi(), this);
+            // The renderer wrapper reports the app-side density (171 dpi on the
+            // emulator), but the stock host publishes the physical display
+            // density (120 dpi) to the car app's map surface. Passing the
+            // wrapper value makes OsmAnd scale map labels roughly twice as large.
+            int surfaceDensityDpi = displayContext.getResources().getDisplayMetrics().densityDpi;
+            rootView = new HostRootView(displayContext, surfaceDensityDpi, this);
             rootView.setWindowInsets(windowInsets, stableInsets);
             surfaceHost = new SurfaceControlViewHost(displayContext, display, wrapper.getHostToken());
             surfaceHost.setView(rootView, Math.max(1, wrapper.getWidth()), Math.max(1, wrapper.getHeight()));

@@ -108,6 +108,10 @@ def near(value, expected, tolerance):
     return all(abs(value[i] - expected[i]) <= tolerance for i in range(3))
 
 
+def bright_neutral(value):
+    return min(value[:3]) > 140 and max(value[:3]) - min(value[:3]) < 40
+
+
 def shift_error(reference, moved, shift_x, shift_y):
     """Compare map content after a candidate translation.
 
@@ -166,12 +170,21 @@ down_scores = [(shift_error(before_down, after_down, 0, shift), shift)
                for shift in range(-220, 221, 10)]
 right_shift = min(right_scores)[1]
 down_shift = min(down_scores)[1]
+history_pixels = [(x, y) for y in range(205, 244) for x in range(20, 65)
+                  if bright_neutral(pixel(before_rows, x, y))]
+history_bounds = (
+    min(x for x, _ in history_pixels), max(x for x, _ in history_pixels),
+    min(y for _, y in history_pixels), max(y for _, y in history_pixels),
+) if history_pixels else (999, -1, 999, -1)
 
 checks = {
     "map is rendered before gesture": map_active > 10000,
     "map responds to a swipe": map_diffs > 1000,
     "rightward finger drag moves map right": right_shift > 20,
     "downward finger drag moves map down": down_shift > 20,
+    "history icon has stock circular-arrow geometry": len(history_pixels) > 260
+        and history_bounds[0] <= 26 and history_bounds[1] >= 55
+        and history_bounds[3] >= 236,
     "settings uses stock dark background": near(pixel(settings_rows, 50, 100), (19, 19, 19, 255), 12),
     "settings toolbar back affordance exists": max(pixel(settings_rows, 40, 87)[:3]) > 100,
     "settings switch is rendered": max(pixel(settings_rows, 994, 167)[:3]) > 50
@@ -182,7 +195,8 @@ if failed:
     for name in failed:
         print("FAIL:", name)
     print("map_active=", map_active, "map_diffs=", map_diffs,
-          "right_shift=", right_shift, "down_shift=", down_shift)
+          "right_shift=", right_shift, "down_shift=", down_shift,
+          "history_pixels=", len(history_pixels), "history_bounds=", history_bounds)
     raise SystemExit(1)
 print("PASS: settings layout and map gesture behavior match the stock host profile")
 PY

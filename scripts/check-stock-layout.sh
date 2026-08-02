@@ -11,14 +11,17 @@ tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/caramel-vanilla-host.XXXXXX")
 trap 'rm -rf "$tmp_dir"' EXIT
 
 "$ADB" shell am force-stop "$PACKAGE"
+"$ADB" logcat -c
 "$ADB" shell am start -W -n "$COMPONENT" >/dev/null
 sleep 5
 
 remote=/sdcard/caramel-vanilla-host-layout.png
 "$ADB" shell screencap -p "$remote" >/dev/null
 "$ADB" pull -q "$remote" "$tmp_dir/screen.png"
+expected_density=$($ADB shell wm density | awk '/Physical density:/ {print $3}')
+surface_line=$($ADB logcat -d -v time | grep 'Surface available' | tail -1 || true)
 
-python3 - "$tmp_dir/screen.png" <<'PY'
+python3 - "$tmp_dir/screen.png" "$expected_density" "$surface_line" <<'PY'
 import struct
 import sys
 import zlib
@@ -85,6 +88,8 @@ def decode_png(path):
 width, height, rows = decode_png(sys.argv[1])
 if (width, height) != (1080, 600):
     raise SystemExit(f"FAIL: expected 1080x600, got {width}x{height}")
+expected_density = sys.argv[2]
+surface_line = sys.argv[3]
 
 
 def pixel(x, y):
@@ -102,6 +107,7 @@ checks = {
     "content clears the status bar": not is_neutral_dark(pixel(30, 60)),
     "settings control exists": is_neutral_dark(pixel(970, 75)),
     "search control exists": is_neutral_dark(pixel(1040, 75)),
+    "map surface uses physical display density": f"dpi: {expected_density}" in surface_line,
 }
 failed = [name for name, passed in checks.items() if not passed]
 if failed:

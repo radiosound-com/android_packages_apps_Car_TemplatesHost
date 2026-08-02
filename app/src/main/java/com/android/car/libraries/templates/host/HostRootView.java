@@ -467,9 +467,7 @@ final class HostRootView extends FrameLayout {
                     PathHelper.drawNavigationArrow(canvas, paint, x, y, dp(16));
                     break;
                 case 1:
-                    canvas.drawCircle(x, y, dp(14), paint);
-                    canvas.drawLine(x - dp(14), y, x - dp(3), y, paint);
-                    canvas.drawLine(x - dp(14), y, x - dp(7), y - dp(8), paint);
+                    drawHistoryIcon(canvas, x, y);
                     break;
                 case 2:
                     canvas.drawCircle(x, y, dp(14), paint);
@@ -492,6 +490,58 @@ final class HostRootView extends FrameLayout {
             }
             paint.setStrokeCap(Paint.Cap.BUTT);
             paint.setStyle(Paint.Style.FILL);
+        }
+
+        private void drawHistoryIcon(Canvas canvas, float x, float y) {
+            float unit = getWidth() / 1080f;
+            float left = x - unit * 18f;
+            float top = y - unit * 18f;
+            paint.setColor(ICON);
+            paint.setStyle(Paint.Style.FILL);
+
+            Path loop = new Path();
+            loop.moveTo(left + unit * 28.5f, top + unit * 18f);
+            loop.cubicTo(left + unit * 28.5f, top + unit * 23.799f,
+                    left + unit * 23.799f, top + unit * 28.5f,
+                    left + unit * 18f, top + unit * 28.5f);
+            loop.cubicTo(left + unit * 15.3998f, top + unit * 28.5f,
+                    left + unit * 13.0204f, top + unit * 27.5549f,
+                    left + unit * 11.1865f, top + unit * 25.9894f);
+            loop.lineTo(left + unit * 9.1285f, top + unit * 28.176f);
+            loop.cubicTo(left + unit * 11.501f, top + unit * 30.2461f,
+                    left + unit * 14.604f, top + unit * 31.5f,
+                    left + unit * 18f, top + unit * 31.5f);
+            loop.cubicTo(left + unit * 25.4558f, top + unit * 31.5f,
+                    left + unit * 31.5f, top + unit * 25.4558f,
+                    left + unit * 31.5f, top + unit * 18f);
+            loop.cubicTo(left + unit * 31.5f, top + unit * 10.5442f,
+                    left + unit * 25.4558f, top + unit * 4.5f,
+                    left + unit * 18f, top + unit * 4.5f);
+            loop.cubicTo(left + unit * 10.5442f, top + unit * 4.5f,
+                    left + unit * 4.5f, top + unit * 10.5442f,
+                    left + unit * 4.5f, top + unit * 18f);
+            loop.lineTo(left, top + unit * 18f);
+            loop.lineTo(left + unit * 6f, top + unit * 25.5f);
+            loop.lineTo(left + unit * 12f, top + unit * 18f);
+            loop.lineTo(left + unit * 7.5f, top + unit * 18f);
+            loop.cubicTo(left + unit * 7.5f, top + unit * 12.201f,
+                    left + unit * 12.201f, top + unit * 7.5f,
+                    left + unit * 18f, top + unit * 7.5f);
+            loop.cubicTo(left + unit * 23.799f, top + unit * 7.5f,
+                    left + unit * 28.5f, top + unit * 12.201f,
+                    left + unit * 28.5f, top + unit * 18f);
+            loop.close();
+            canvas.drawPath(loop, paint);
+
+            Path hands = new Path();
+            hands.moveTo(left + unit * 16.5f, top + unit * 13.5f);
+            hands.lineTo(left + unit * 16.5f, top + unit * 20.3028f);
+            hands.lineTo(left + unit * 21.668f, top + unit * 23.7481f);
+            hands.lineTo(left + unit * 23.332f, top + unit * 21.2519f);
+            hands.lineTo(left + unit * 19.5f, top + unit * 18.6972f);
+            hands.lineTo(left + unit * 19.5f, top + unit * 13.5f);
+            hands.close();
+            canvas.drawPath(hands, paint);
         }
 
         private void drawMapActionStrip(Canvas canvas,
