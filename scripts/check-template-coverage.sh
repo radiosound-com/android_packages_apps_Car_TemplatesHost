@@ -22,6 +22,7 @@ for contract in \
     'sendSearchSubmitted' \
     'showAlert' \
     'dismissAlert' \
+    'openMicrophone' \
     'onSurfaceChanged' \
     'navigationStarted' \
     'navigationEnded' \

@@ -4,6 +4,7 @@
         android:required="true" />
 
     <uses-permission android:name="android.car.permission.TEMPLATE_RENDERER" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
     <application
         android:label="Caramel Vanilla Templates Host"

@@ -1,5 +1,6 @@
 package com.android.car.libraries.templates.host;
 
+import android.Manifest;
 import android.app.Service;
 import android.content.ComponentName;
 import android.content.Context;
@@ -9,10 +10,14 @@ import android.content.res.Configuration;
 import android.graphics.Insets;
 import android.graphics.Rect;
 import android.hardware.display.DisplayManager;
+import android.media.AudioFormat;
+import android.media.AudioRecord;
+import android.media.MediaRecorder;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
+import android.os.ParcelFileDescriptor;
 import android.os.RemoteException;
 import android.util.Log;
 import android.view.Display;
@@ -45,6 +50,9 @@ import androidx.car.app.model.Pane;
 import androidx.car.app.model.Row;
 import androidx.car.app.model.Template;
 import androidx.car.app.model.TemplateWrapper;
+import androidx.car.app.media.OpenMicrophoneRequest;
+import androidx.car.app.media.OpenMicrophoneResponse;
+import androidx.car.app.media.CarAudioCallback;
 import androidx.car.app.navigation.model.MapTemplate;
 import androidx.car.app.navigation.model.MapWithContentTemplate;
 import androidx.car.app.navigation.model.NavigationTemplate;
@@ -58,6 +66,8 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.io.FileOutputStream;
+import java.io.IOException;
 
 /**
  * Small, open-source AndroidX Car App templates host for AAOS.
@@ -197,6 +207,7 @@ public final class TemplatesHostService extends Service {
                 new android.view.inputmethod.EditorInfo();
         private final androidx.car.app.activity.renderer.IProxyInputConnection inputConnection =
                 new SearchInputConnection();
+        private MicrophoneSession microphoneSession;
         private Insets windowInsets = Insets.NONE;
         private Insets stableInsets = Insets.NONE;
 
@@ -313,6 +324,7 @@ public final class TemplatesHostService extends Service {
             appSurfaceCallback = null;
             currentTemplate = null;
             lastAppLocation = null;
+            stopMicrophone();
         }
 
         private void bindToCarApp() {
@@ -831,7 +843,112 @@ public final class TemplatesHostService extends Service {
 
             @Override
             public Bundleable openMicrophone(Bundleable request) {
+                Object value = unwrap(request);
+                if (!(value instanceof OpenMicrophoneRequest)) {
+                    Log.w(TAG, "Car app sent an invalid microphone request: " + value);
+                    return null;
+                }
+                try {
+                    return RendererSession.this.openMicrophone((OpenMicrophoneRequest) value);
+                } catch (IOException | SecurityException | IllegalStateException e) {
+                    Log.e(TAG, "Unable to open the car microphone", e);
+                    stopMicrophone();
+                    return null;
+                }
+            }
+        }
+
+        private Bundleable openMicrophone(OpenMicrophoneRequest request)
+                throws IOException {
+            if (checkSelfPermission(Manifest.permission.RECORD_AUDIO)
+                    != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                Log.w(TAG, "Microphone permission is not granted to the templates host");
                 return null;
+            }
+            stopMicrophone();
+            microphoneSession = new MicrophoneSession(request);
+            microphoneSession.start();
+            try {
+                return Bundleable.create(microphoneSession.response);
+            } catch (BundlerException e) {
+                stopMicrophone();
+                throw new IOException("Unable to serialize microphone response", e);
+            }
+        }
+
+        private void stopMicrophone() {
+            if (microphoneSession != null) {
+                microphoneSession.stop();
+                microphoneSession = null;
+            }
+        }
+
+        private final class MicrophoneSession {
+            private static final int SAMPLE_RATE = 16000;
+            private final OpenMicrophoneRequest request;
+            private final ParcelFileDescriptor[] pipe;
+            private final AudioRecord audioRecord;
+            private final Thread worker;
+            private volatile boolean running;
+            private final OpenMicrophoneResponse response;
+
+            MicrophoneSession(OpenMicrophoneRequest request) throws IOException {
+                this.request = request;
+                int minimum = AudioRecord.getMinBufferSize(SAMPLE_RATE,
+                        AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT);
+                if (minimum <= 0) {
+                    throw new IllegalStateException("AudioRecord returned no usable buffer size");
+                }
+                pipe = ParcelFileDescriptor.createPipe();
+                audioRecord = new AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION,
+                        SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO,
+                        AudioFormat.ENCODING_PCM_16BIT, Math.max(minimum, 4096));
+                final androidx.car.app.media.CarAudioCallbackDelegate callback =
+                        request.getCarAudioCallbackDelegate();
+                CarAudioCallback stopCallback = () -> {
+                    if (callback != null) callback.onStopRecording();
+                    stop();
+                };
+                response = new OpenMicrophoneResponse.Builder(stopCallback)
+                        .setCarMicrophoneDescriptor(pipe[0]).build();
+                worker = new Thread(this::record, "CaramelTemplatesHost-Microphone");
+            }
+
+            void start() {
+                running = true;
+                audioRecord.startRecording();
+                worker.start();
+            }
+
+            void record() {
+                byte[] buffer = new byte[4096];
+                try (FileOutputStream output = new FileOutputStream(pipe[1].getFileDescriptor())) {
+                    while (running) {
+                        int count = audioRecord.read(buffer, 0, buffer.length);
+                        if (count > 0) {
+                            output.write(buffer, 0, count);
+                            output.flush();
+                        }
+                    }
+                } catch (IOException | RuntimeException e) {
+                    if (running) Log.w(TAG, "Microphone pipe stopped", e);
+                }
+            }
+
+            void stop() {
+                running = false;
+                try {
+                    audioRecord.stop();
+                } catch (RuntimeException ignored) {
+                }
+                try {
+                    pipe[1].close();
+                } catch (IOException ignored) {
+                }
+                try {
+                    pipe[0].close();
+                } catch (IOException ignored) {
+                }
             }
         }
 

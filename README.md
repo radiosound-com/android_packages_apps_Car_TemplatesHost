@@ -76,5 +76,6 @@ After installing the conformance APK, the complete AVD matrix is:
 ```
 
 The remaining parity work is device- and app-driven: richer icon/span
-rendering, virtualized remote list sections, voice/microphone integration,
-media-host tests, and pixel-level comparisons on additional display profiles.
+rendering, virtualized remote list sections, recording-device permission
+policy, media-host tests, and pixel-level comparisons on additional display
+profiles.
