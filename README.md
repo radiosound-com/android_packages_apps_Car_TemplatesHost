@@ -4,6 +4,18 @@ This is the open-source Android Automotive templates host for Caramel Vanilla.
 It implements the AndroidX Car App `RendererService` protocol and renders the
 serialized template models into a `SurfaceControlViewHost` surface.
 
+Copyright 2026 Radio Sound, Inc. The original source in this repository is
+licensed under the [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0).
+AndroidX and AOSP dependencies retain their upstream licenses and attributions.
+
+Published Caramel Vanilla source:
+
+* [Templates host](https://github.com/radiosound-com/android_packages_apps_Car_TemplatesHost)
+* [Product manifest](https://github.com/radiosound-com/caramel-vanilla-manifest)
+* [OsmAnd product packaging](https://github.com/radiosound-com/android_vendor_osmand)
+* [Raspberry Pi 5 device integration](https://github.com/radiosound-com/android_device_brcm_rpi5/tree/caramel-vanilla-aaos)
+* [OsmAnd AAOS fork](https://github.com/radiosound-com/OsmAnd/tree/caramel-vanilla-osmand-aaos)
+
 The renderer is organized in two layers: `TemplatesHostService` owns the
 AndroidX binder handshake, app lifecycle, surface lifecycle, host callbacks,
 and input proxy; `HostRootView` owns model-to-pixel rendering and hit testing.

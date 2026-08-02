@@ -1,4 +1,7 @@
 #!/bin/sh
+# Copyright 2026 Radio Sound, Inc.
+# Licensed under the Apache License, Version 2.0.
+
 set -eu
 
 ADB=${ADB:-adb}
