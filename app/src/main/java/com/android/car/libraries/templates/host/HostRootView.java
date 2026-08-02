@@ -909,7 +909,9 @@ final class HostRootView extends FrameLayout {
                             listScrollOffset - dy));
                     invalidate();
                 } else if (pressedHit == null && mapMode) {
-                    session.onMapScroll(dx, dy);
+                    // SurfaceCallback follows GestureDetector's scroll convention: its
+                    // distance is the map displacement, opposite the finger delta.
+                    session.onMapScroll(-dx, -dy);
                 }
                 lastX = event.getX();
                 lastY = event.getY();
