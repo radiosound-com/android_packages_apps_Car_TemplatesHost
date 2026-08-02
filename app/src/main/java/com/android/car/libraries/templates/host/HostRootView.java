@@ -3,6 +3,8 @@ package com.android.car.libraries.templates.host;
 import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Insets;
+import android.graphics.Path;
 import android.graphics.Paint;
 import android.graphics.RectF;
 import android.graphics.Typeface;
@@ -46,7 +48,7 @@ final class HostRootView extends FrameLayout {
         setBackgroundColor(Color.TRANSPARENT);
         mapSurface = new MapSurfaceView(context, session);
         addView(mapSurface, new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
-        templateView = new TemplateCanvasView(context, session);
+        templateView = new TemplateCanvasView(context, session, densityDpi);
         addView(templateView, new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
     }
 
@@ -59,6 +61,14 @@ final class HostRootView extends FrameLayout {
                 || template instanceof PlaceListNavigationTemplate;
         mapSurface.setVisibility(map ? VISIBLE : INVISIBLE);
         templateView.setMapMode(map);
+    }
+
+    void setWindowInsets(Insets insets, Insets stableInsets) {
+        templateView.setWindowInsets(insets, stableInsets);
+    }
+
+    void showToast(CharSequence text) {
+        templateView.showToast(text);
     }
 
     void destroy() {
@@ -101,21 +111,29 @@ final class HostRootView extends FrameLayout {
 
     static final class TemplateCanvasView extends android.view.View {
         private static final int BG = Color.rgb(18, 20, 24);
-        private static final int PANEL = Color.rgb(31, 35, 42);
-        private static final int PANEL_ALT = Color.rgb(40, 45, 54);
-        private static final int TEXT = Color.rgb(244, 246, 250);
-        private static final int MUTED = Color.rgb(170, 178, 190);
+        private static final int PANEL = Color.rgb(57, 57, 57);
+        private static final int PANEL_ALT = Color.rgb(68, 68, 68);
+        private static final int DIVIDER = Color.rgb(76, 76, 76);
+        private static final int TEXT = Color.rgb(232, 232, 232);
+        private static final int MUTED = Color.rgb(183, 183, 183);
         private static final int ACCENT = Color.rgb(118, 183, 255);
+        private static final int ICON = Color.rgb(245, 245, 245);
 
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final TemplatesHostService.RendererSession session;
+        private final float density;
         private final List<Hit> hits = new ArrayList<>();
         private TemplateWrapper wrapper;
         private boolean mapMode;
+        private Insets windowInsets = Insets.NONE;
+        private Insets stableInsets = Insets.NONE;
+        private String toast;
 
-        TemplateCanvasView(Context context, TemplatesHostService.RendererSession session) {
+        TemplateCanvasView(Context context, TemplatesHostService.RendererSession session,
+                           int densityDpi) {
             super(context);
             this.session = session;
+            density = densityDpi / 160f;
             setFocusable(true);
             paint.setTypeface(Typeface.create("sans", Typeface.NORMAL));
         }
@@ -128,6 +146,50 @@ final class HostRootView extends FrameLayout {
         void render(TemplateWrapper wrapper) {
             this.wrapper = wrapper;
             invalidate();
+        }
+
+        void setWindowInsets(Insets insets, Insets stableInsets) {
+            this.windowInsets = insets == null ? Insets.NONE : insets;
+            this.stableInsets = stableInsets == null ? Insets.NONE : stableInsets;
+            invalidate();
+        }
+
+        void showToast(CharSequence text) {
+            toast = text == null ? null : text.toString();
+            invalidate();
+            removeCallbacks(clearToast);
+            if (toast != null) {
+                postDelayed(clearToast, 3500L);
+            }
+        }
+
+        private final Runnable clearToast = () -> {
+            toast = null;
+            invalidate();
+        };
+
+        private float dp(float value) {
+            // The AndroidX surface reports a renderer density that is not the
+            // physical Automotive display density on this profile. The stock
+            // host's 520dp panel resolves to 390px at 1080x600, so scale the
+            // design metrics from the reference display and keep them adaptive.
+            return value * (getWidth() / 1080f) * .75f;
+        }
+
+        private float contentTop() {
+            return Math.max(0, windowInsets.top);
+        }
+
+        private float contentBottom() {
+            return getHeight() - Math.max(0, windowInsets.bottom);
+        }
+
+        private float panelTop() {
+            return contentTop() + dp(12);
+        }
+
+        private float panelBottom() {
+            return contentBottom() - dp(25);
         }
 
         @Override
@@ -175,10 +237,16 @@ final class HostRootView extends FrameLayout {
         }
 
         private void drawPlaceListNavigation(Canvas canvas, PlaceListNavigationTemplate template) {
-            drawPanel(canvas, 24, 20, Math.min(getWidth() - 24, 560), getHeight() - 28);
-            title(canvas, template.getTitle(), 48, 62);
-            drawItems(canvas, template.getItemList(), 48, 94, Math.min(getWidth() - 56, 510));
-            drawActionStrip(canvas, template.getActionStrip());
+            float left = dp(12);
+            float top = panelTop();
+            float right = Math.min(getWidth() - dp(12), left + dp(520));
+            float bottom = panelBottom();
+            drawPanel(canvas, left, top, right, bottom);
+            drawAppHeader(canvas, template.getTitle(), left, top, right);
+            drawRows(canvas, template.getItemList(), left, top + dp(84), right, true);
+            drawMapActionStrip(canvas, template.getActionStrip(), top + dp(42));
+            drawMapControls(canvas, top, bottom);
+            drawToast(canvas);
         }
 
         private void drawMapTemplate(Canvas canvas, MapTemplate template) {
@@ -191,12 +259,17 @@ final class HostRootView extends FrameLayout {
         }
 
         private void drawNavigationTemplate(Canvas canvas, NavigationTemplate template) {
-            int left = 24;
-            int bottom = getHeight() - 30;
-            drawPanel(canvas, left, bottom - 126, Math.min(getWidth() - 48, 640), bottom);
-            text(canvas, "Navigation", left + 24, bottom - 86, 24, TEXT);
-            text(canvas, "Map surface supplied to the app", left + 24, bottom - 52, 16, MUTED);
-            drawActionStrip(canvas, template.getActionStrip());
+            float left = dp(12);
+            float bottom = panelBottom();
+            float top = Math.max(panelTop(), bottom - dp(168));
+            float right = Math.min(getWidth() - dp(12), left + dp(520));
+            drawPanel(canvas, left, top, right, bottom);
+            text(canvas, "Navigation", left + dp(32), top + dp(53), dp(27), TEXT);
+            text(canvas, "Map surface supplied to the app", left + dp(32),
+                    top + dp(88), dp(19), MUTED);
+            drawMapActionStrip(canvas, template.getActionStrip(), panelTop() + dp(42));
+            drawMapControls(canvas, panelTop(), bottom);
+            drawToast(canvas);
         }
 
         private void drawListTemplate(Canvas canvas, ListTemplate template) {
@@ -242,6 +315,163 @@ final class HostRootView extends FrameLayout {
             drawItems(canvas, template.getItemList(), 48, 258, Math.min(getWidth() - 56, 570));
             drawAction(canvas, template.getHeaderAction(), 48, 28, 210, 72);
             drawActionStrip(canvas, template.getActionStrip());
+        }
+
+        private void drawAppHeader(Canvas canvas, @Nullable CarText title,
+                                   float left, float top, float right) {
+            float centerX = left + dp(35);
+            float centerY = top + dp(42);
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(Color.rgb(70, 70, 70));
+            canvas.drawCircle(centerX, centerY, dp(23), paint);
+            drawPin(canvas, centerX, centerY, dp(16));
+            text(canvas, textOf(title), left + dp(70), top + dp(52), dp(27), TEXT);
+            paint.setColor(DIVIDER);
+            canvas.drawRect(left, top + dp(84) - 1, right, top + dp(84), paint);
+        }
+
+        private void drawRows(Canvas canvas, @Nullable ItemList list, float left, float top,
+                              float right, boolean withIcons) {
+            if (list == null) return;
+            int index = 0;
+            for (Item item : list.getItems()) {
+                if (!(item instanceof Row)) continue;
+                Row row = (Row) item;
+                float rowTop = top + index * dp(84);
+                float rowBottom = rowTop + dp(84);
+                if (rowTop >= panelBottom()) break;
+                if (withIcons) {
+                    drawRowIcon(canvas, index, left + dp(44), rowTop + dp(42));
+                }
+                text(canvas, textOf(row.getTitle()), left + dp(94), rowTop + dp(53),
+                        dp(27), row.isEnabled() ? TEXT : MUTED);
+                if (!row.getTexts().isEmpty()) {
+                    text(canvas, textOf(row.getTexts().get(0)), left + dp(94),
+                            rowTop + dp(72), dp(15), MUTED);
+                }
+                drawChevron(canvas, right - dp(44), rowTop + dp(42));
+                paint.setColor(DIVIDER);
+                canvas.drawRect(left + dp(12), rowBottom - 1, right - dp(12), rowBottom, paint);
+                addHit(left, rowTop, right, rowBottom, row.getOnClickDelegate());
+                index++;
+            }
+        }
+
+        private void drawRowIcon(Canvas canvas, int index, float x, float y) {
+            paint.setColor(ICON);
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(dp(3));
+            paint.setStrokeCap(Paint.Cap.ROUND);
+            switch (index) {
+                case 0:
+                    PathHelper.drawNavigationArrow(canvas, paint, x, y, dp(16));
+                    break;
+                case 1:
+                    canvas.drawCircle(x, y, dp(14), paint);
+                    canvas.drawLine(x - dp(14), y, x - dp(3), y, paint);
+                    canvas.drawLine(x - dp(14), y, x - dp(7), y - dp(8), paint);
+                    break;
+                case 2:
+                    canvas.drawCircle(x, y, dp(14), paint);
+                    paint.setStyle(Paint.Style.FILL);
+                    text(canvas, "i", x - dp(4), y + dp(8), dp(23), ICON);
+                    break;
+                case 3:
+                    PathHelper.drawStar(canvas, paint, x, y, dp(16));
+                    break;
+                case 4:
+                    canvas.drawLine(x - dp(8), y - dp(15), x - dp(8), y + dp(15), paint);
+                    PathHelper.drawFlag(canvas, paint, x - dp(5), y - dp(11), dp(17));
+                    break;
+                default:
+                    canvas.drawCircle(x - dp(7), y, dp(5), paint);
+                    canvas.drawCircle(x + dp(7), y, dp(5), paint);
+                    canvas.drawLine(x - dp(2), y - dp(5), x + dp(2), y - dp(5), paint);
+                    canvas.drawLine(x - dp(2), y + dp(5), x + dp(2), y + dp(5), paint);
+                    break;
+            }
+            paint.setStrokeCap(Paint.Cap.BUTT);
+            paint.setStyle(Paint.Style.FILL);
+        }
+
+        private void drawMapActionStrip(Canvas canvas,
+                                        @Nullable androidx.car.app.model.ActionStrip strip,
+                                        float centerY) {
+            if (strip == null) return;
+            List<Action> actions = strip.getActions();
+            float centerX = getWidth() - dp(53);
+            for (int i = actions.size() - 1; i >= 0; i--) {
+                Action action = actions.get(i);
+                float x = centerX - (actions.size() - 1 - i) * dp(94);
+                paint.setColor(PANEL);
+                paint.setStyle(Paint.Style.FILL);
+                canvas.drawCircle(x, centerY, dp(40), paint);
+                drawActionIcon(canvas, action, x, centerY, x < centerX);
+                addHit(x - dp(40), centerY - dp(40), x + dp(40), centerY + dp(40),
+                        action.getOnClickDelegate());
+            }
+        }
+
+        private void drawMapControls(Canvas canvas, float top, float bottom) {
+            float x = getWidth() - dp(53);
+            float center = top + (bottom - top) * .64f;
+            drawControl(canvas, x, center, 0);
+            drawControl(canvas, x, center + dp(92), 1);
+            drawControl(canvas, x, center + dp(184), 2);
+        }
+
+        private void drawControl(Canvas canvas, float x, float y, int type) {
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(PANEL);
+            canvas.drawCircle(x, y, dp(40), paint);
+            paint.setColor(ICON);
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(dp(3));
+            if (type == 0) {
+                canvas.drawCircle(x, y, dp(11), paint);
+                canvas.drawLine(x - dp(17), y, x + dp(17), y, paint);
+                canvas.drawLine(x, y - dp(17), x, y + dp(17), paint);
+            } else if (type == 1) {
+                canvas.drawLine(x - dp(14), y, x + dp(14), y, paint);
+                canvas.drawLine(x, y - dp(14), x, y + dp(14), paint);
+            } else {
+                canvas.drawLine(x - dp(14), y, x + dp(14), y, paint);
+            }
+            paint.setStyle(Paint.Style.FILL);
+        }
+
+        private void drawActionIcon(Canvas canvas, Action action, float x, float y,
+                                    boolean settings) {
+            String label = textOf(action.getTitle()).toLowerCase();
+            paint.setColor(ICON);
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(dp(3));
+            if (settings || label.contains("setting")) {
+                canvas.drawCircle(x, y, dp(11), paint);
+                for (int i = 0; i < 8; i++) {
+                    double angle = i * Math.PI / 4;
+                    canvas.drawLine(x + (float) Math.cos(angle) * dp(14),
+                            y + (float) Math.sin(angle) * dp(14),
+                            x + (float) Math.cos(angle) * dp(19),
+                            y + (float) Math.sin(angle) * dp(19), paint);
+                }
+            } else {
+                canvas.drawCircle(x - dp(3), y - dp(3), dp(10), paint);
+                canvas.drawLine(x + dp(5), y + dp(5), x + dp(16), y + dp(16), paint);
+            }
+            paint.setStyle(Paint.Style.FILL);
+        }
+
+        private void drawToast(Canvas canvas) {
+            if (toast == null || toast.isEmpty()) return;
+            float left = dp(428);
+            float right = Math.min(getWidth() - dp(40), dp(1009));
+            float bottom = panelBottom();
+            float top = bottom - dp(132);
+            paint.setColor(Color.rgb(224, 229, 236));
+            paint.setStyle(Paint.Style.FILL);
+            canvas.drawRoundRect(left, top, right, bottom, dp(52), dp(52), paint);
+            text(canvas, toast, left + dp(25), top + dp(58), dp(23), Color.rgb(55, 55, 55));
         }
 
         private void drawContentPanel(Canvas canvas, Template content, boolean overlay) {
@@ -352,14 +582,39 @@ final class HostRootView extends FrameLayout {
 
         private void drawPanel(Canvas canvas, float left, float top, float right, float bottom) {
             paint.setColor(PANEL);
-            canvas.drawRoundRect(left, top, right, bottom, 18, 18, paint);
+            paint.setStyle(Paint.Style.FILL);
+            canvas.drawRoundRect(left, top, right, bottom, dp(16), dp(16), paint);
         }
 
         private void text(Canvas canvas, String value, float x, float y, float size, int color) {
             paint.setColor(color);
+            paint.setStyle(Paint.Style.FILL);
             paint.setTextSize(size);
             paint.setTypeface(Typeface.create("sans", Typeface.NORMAL));
             canvas.drawText(value == null ? "" : value, x, y, paint);
+        }
+
+        private void drawPin(Canvas canvas, float x, float y, float size) {
+            paint.setColor(Color.rgb(18, 115, 194));
+            paint.setStyle(Paint.Style.FILL);
+            Path pin = new Path();
+            pin.moveTo(x, y + size);
+            pin.cubicTo(x - size, y, x - size * .78f, y - size, x, y - size);
+            pin.cubicTo(x + size * .78f, y - size, x + size, y, x, y + size);
+            canvas.drawPath(pin, paint);
+            paint.setColor(Color.rgb(255, 153, 0));
+            canvas.drawCircle(x, y - dp(1), size * .48f, paint);
+        }
+
+        private void drawChevron(Canvas canvas, float x, float y) {
+            paint.setColor(Color.rgb(160, 160, 160));
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(dp(4));
+            paint.setStrokeCap(Paint.Cap.SQUARE);
+            canvas.drawLine(x - dp(7), y - dp(10), x + dp(3), y, paint);
+            canvas.drawLine(x + dp(3), y, x - dp(7), y + dp(10), paint);
+            paint.setStrokeCap(Paint.Cap.BUTT);
+            paint.setStyle(Paint.Style.FILL);
         }
 
         private String textOf(@Nullable CarText value) {
@@ -373,6 +628,41 @@ final class HostRootView extends FrameLayout {
                 case Action.TYPE_PAN: return "Pan";
                 case Action.TYPE_COMPOSE_MESSAGE: return "Compose";
                 default: return "Action";
+            }
+        }
+
+        private static final class PathHelper {
+            static void drawNavigationArrow(Canvas canvas, Paint paint, float x, float y,
+                                            float size) {
+                Path path = new Path();
+                path.moveTo(x, y - size);
+                path.lineTo(x + size * .75f, y + size);
+                path.lineTo(x, y + size * .55f);
+                path.lineTo(x - size * .75f, y + size);
+                path.close();
+                canvas.drawPath(path, paint);
+            }
+
+            static void drawStar(Canvas canvas, Paint paint, float x, float y, float size) {
+                Path path = new Path();
+                for (int i = 0; i < 10; i++) {
+                    double angle = -Math.PI / 2 + i * Math.PI / 5;
+                    float radius = i % 2 == 0 ? size : size * .42f;
+                    float px = x + (float) Math.cos(angle) * radius;
+                    float py = y + (float) Math.sin(angle) * radius;
+                    if (i == 0) path.moveTo(px, py); else path.lineTo(px, py);
+                }
+                path.close();
+                canvas.drawPath(path, paint);
+            }
+
+            static void drawFlag(Canvas canvas, Paint paint, float x, float y, float size) {
+                Path path = new Path();
+                path.moveTo(x, y);
+                path.lineTo(x + size, y + size * .35f);
+                path.lineTo(x, y + size * .7f);
+                path.close();
+                canvas.drawPath(path, paint);
             }
         }
 

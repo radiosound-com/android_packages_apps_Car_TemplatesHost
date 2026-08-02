@@ -191,6 +191,8 @@ public final class TemplatesHostService extends Service {
         private SurfaceControlViewHost surfaceHost;
         private HostRootView rootView;
         private TemplateWrapper currentTemplate;
+        private Insets windowInsets = Insets.NONE;
+        private Insets stableInsets = Insets.NONE;
 
         RendererSession(ICarAppActivity activity, ComponentName component, int displayId) {
             this.activity = activity;
@@ -206,14 +208,24 @@ public final class TemplatesHostService extends Service {
                 activity.setInsetsListener(new IInsetsListener.Stub() {
                     @Override
                     public void onInsetsChanged(Insets insets) {
+                        main.post(() -> updateInsets(insets, stableInsets));
                     }
 
                     @Override
                     public void onWindowInsetsChanged(Insets insets, Insets stableInsets) {
+                        main.post(() -> updateInsets(insets, stableInsets));
                     }
                 });
             } catch (RemoteException e) {
                 Log.e(TAG, "Unable to initialize renderer callbacks for " + component, e);
+            }
+        }
+
+        private void updateInsets(Insets insets, Insets stableInsets) {
+            this.windowInsets = insets == null ? Insets.NONE : insets;
+            this.stableInsets = stableInsets == null ? Insets.NONE : stableInsets;
+            if (rootView != null) {
+                rootView.setWindowInsets(this.windowInsets, this.stableInsets);
             }
         }
 
@@ -427,6 +439,7 @@ public final class TemplatesHostService extends Service {
             }
             Context displayContext = createDisplayContext(display);
             rootView = new HostRootView(displayContext, wrapper.getDensityDpi(), this);
+            rootView.setWindowInsets(windowInsets, stableInsets);
             surfaceHost = new SurfaceControlViewHost(displayContext, display, wrapper.getHostToken());
             surfaceHost.setView(rootView, Math.max(1, wrapper.getWidth()), Math.max(1, wrapper.getHeight()));
             try {
@@ -623,6 +636,11 @@ public final class TemplatesHostService extends Service {
             @Override
             public void showToast(CharSequence text, int duration) {
                 Log.i(TAG, "Car app toast: " + text);
+                main.post(() -> {
+                    if (rootView != null) {
+                        rootView.showToast(text);
+                    }
+                });
             }
 
             @Override
