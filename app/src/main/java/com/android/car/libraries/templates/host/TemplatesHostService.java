@@ -38,6 +38,7 @@ import androidx.car.app.activity.renderer.IRendererService;
 import androidx.car.app.activity.renderer.surface.ISurfaceListener;
 import androidx.car.app.activity.renderer.surface.SurfaceWrapper;
 import androidx.car.app.model.Action;
+import androidx.car.app.model.Alert;
 import androidx.car.app.model.CarText;
 import androidx.car.app.model.ItemList;
 import androidx.car.app.model.Pane;
@@ -191,6 +192,11 @@ public final class TemplatesHostService extends Service {
         private SurfaceControlViewHost surfaceHost;
         private HostRootView rootView;
         private TemplateWrapper currentTemplate;
+        private android.location.Location lastAppLocation;
+        private android.view.inputmethod.EditorInfo searchEditorInfo =
+                new android.view.inputmethod.EditorInfo();
+        private final androidx.car.app.activity.renderer.IProxyInputConnection inputConnection =
+                new SearchInputConnection();
         private Insets windowInsets = Insets.NONE;
         private Insets stableInsets = Insets.NONE;
 
@@ -305,6 +311,8 @@ public final class TemplatesHostService extends Service {
             carApp = null;
             appManager = null;
             appSurfaceCallback = null;
+            currentTemplate = null;
+            lastAppLocation = null;
         }
 
         private void bindToCarApp() {
@@ -606,7 +614,88 @@ public final class TemplatesHostService extends Service {
             @Override
             public androidx.car.app.activity.renderer.IProxyInputConnection onCreateInputConnection(
                     android.view.inputmethod.EditorInfo editorInfo) {
+                searchEditorInfo = editorInfo == null
+                        ? new android.view.inputmethod.EditorInfo() : editorInfo;
+                return inputConnection;
+            }
+        }
+
+        /**
+         * The renderer activity owns the IME connection, while the car app owns
+         * the search callback. This small binder proxy keeps that seam alive
+         * without requiring the host to expose its private Canvas view.
+         */
+        private final class SearchInputConnection
+                extends androidx.car.app.activity.renderer.IProxyInputConnection.Stub {
+            @Override public CharSequence getTextBeforeCursor(int length, int flags) {
+                return rootView == null ? "" : rootView.templateView.getSearchText(length);
+            }
+            @Override public CharSequence getTextAfterCursor(int length, int flags) { return ""; }
+            @Override public CharSequence getSelectedText(int flags) { return ""; }
+            @Override public int getCursorCapsMode(int reqModes) { return 0; }
+            @Override public boolean deleteSurroundingText(int beforeLength, int afterLength) {
+                return rootView != null && rootView.templateView.deleteSearchText(beforeLength);
+            }
+            @Override public boolean setComposingText(CharSequence text, int newCursorPosition) {
+                return commitSearch(text);
+            }
+            @Override public boolean setComposingRegion(int start, int end) { return true; }
+            @Override public boolean finishComposingText() { return true; }
+            @Override public boolean commitText(CharSequence text, int newCursorPosition) {
+                return commitSearch(text);
+            }
+            @Override public boolean setSelection(int start, int end) { return true; }
+            @Override public boolean performEditorAction(int actionCode) {
+                if (rootView != null) rootView.templateView.submitSearchText();
+                return true;
+            }
+            @Override public boolean performContextMenuAction(int id) { return false; }
+            @Override public boolean beginBatchEdit() { return true; }
+            @Override public boolean endBatchEdit() { return true; }
+            @Override public boolean sendKeyEvent(android.view.KeyEvent event) {
+                if (event != null && event.getAction() == android.view.KeyEvent.ACTION_DOWN
+                        && event.getKeyCode() == android.view.KeyEvent.KEYCODE_ENTER) {
+                    if (rootView != null) rootView.templateView.submitSearchText();
+                }
+                return true;
+            }
+            @Override public boolean clearMetaKeyStates(int states) { return true; }
+            @Override public boolean reportFullscreenMode(boolean enabled) { return true; }
+            @Override public boolean performPrivateCommand(String action, android.os.Bundle data) {
+                return false;
+            }
+            @Override public boolean requestCursorUpdates(int cursorUpdateMode) { return false; }
+            @Override public boolean commitCorrection(android.view.inputmethod.CorrectionInfo correctionInfo) {
+                return false;
+            }
+            @Override public boolean commitCompletion(android.view.inputmethod.CompletionInfo text) {
+                return false;
+            }
+            @Override public android.view.inputmethod.ExtractedText getExtractedText(
+                    android.view.inputmethod.ExtractedTextRequest request, int flags) {
+                android.view.inputmethod.ExtractedText result =
+                        new android.view.inputmethod.ExtractedText();
+                result.text = rootView == null ? "" : rootView.templateView.getSearchText(0);
+                result.selectionStart = result.selectionEnd = result.text.length();
+                return result;
+            }
+            @Override public void closeConnection() { }
+            @Override public android.view.inputmethod.EditorInfo getEditorInfo() {
+                return searchEditorInfo;
+            }
+            @Override public Bundleable getSurroundingText(int before, int after, int flags) {
                 return null;
+            }
+            @Override public boolean deleteSurroundingTextInCodePoints(int before, int after) {
+                return deleteSurroundingText(before, after);
+            }
+            @Override public boolean commitContent(Bundleable inputContent, int flags,
+                                                   android.os.Bundle opts) { return false; }
+
+            private boolean commitSearch(CharSequence text) {
+                if (rootView == null) return false;
+                rootView.templateView.replaceSearchText(text == null ? "" : text.toString());
+                return true;
             }
         }
 
@@ -623,11 +712,16 @@ public final class TemplatesHostService extends Service {
             @Override
             public void onSurfaceChanged(Bundleable value) {
                 Object wrapper = unwrap(value);
-                if (wrapper instanceof SurfaceWrapper && rootView != null) {
+                if (wrapper instanceof SurfaceWrapper) {
                     SurfaceWrapper surfaceWrapper = (SurfaceWrapper) wrapper;
-                    main.post(() -> surfaceHost.setView(rootView,
-                            Math.max(1, surfaceWrapper.getWidth()),
-                            Math.max(1, surfaceWrapper.getHeight())));
+                    main.post(() -> {
+                        if (surfaceHost != null && rootView != null) {
+                            surfaceHost.setView(rootView,
+                                    Math.max(1, surfaceWrapper.getWidth()),
+                                    Math.max(1, surfaceWrapper.getHeight()));
+                            publishMapSurface();
+                        }
+                    });
                 }
             }
 
@@ -706,15 +800,33 @@ public final class TemplatesHostService extends Service {
 
             @Override
             public void sendLocation(android.location.Location location) {
+                lastAppLocation = location;
+                Log.d(TAG, "Car app location update: " + location);
             }
 
             @Override
             public void showAlert(Bundleable alert) {
-                Log.i(TAG, "Car app alert requested");
+                Object value = unwrap(alert);
+                if (value instanceof Alert) {
+                    Alert renderedAlert = (Alert) value;
+                    Log.i(TAG, "Car app alert requested id=" + renderedAlert.getId());
+                    main.post(() -> {
+                        if (rootView != null) {
+                            rootView.showAlert(renderedAlert);
+                        }
+                    });
+                } else {
+                    Log.w(TAG, "Car app sent an invalid alert: " + value);
+                }
             }
 
             @Override
             public void dismissAlert(int alertId) {
+                main.post(() -> {
+                    if (rootView != null) {
+                        rootView.dismissAlert(alertId);
+                    }
+                });
             }
 
             @Override
@@ -743,13 +855,32 @@ public final class TemplatesHostService extends Service {
         }
 
         private final class NavigationHost extends androidx.car.app.navigation.INavigationHost.Stub {
-            @Override public void navigationStarted() { }
-            @Override public void navigationEnded() { }
-            @Override public void updateTrip(Bundleable trip) { }
+            @Override public void navigationStarted() {
+                Log.i(TAG, "Car app navigation started: " + component);
+            }
+            @Override public void navigationEnded() {
+                Log.i(TAG, "Car app navigation ended: " + component);
+            }
+            @Override public void updateTrip(Bundleable trip) {
+                Log.d(TAG, "Car app trip update received: " + component);
+            }
         }
 
         private final class ConstraintHost extends androidx.car.app.constraints.IConstraintHost.Stub {
-            @Override public int getContentLimit(int templateType) { return 100; }
+            @Override public int getContentLimit(int templateType) {
+                switch (templateType) {
+                    case androidx.car.app.constraints.ConstraintManager.CONTENT_LIMIT_TYPE_GRID:
+                        return 24;
+                    case androidx.car.app.constraints.ConstraintManager.CONTENT_LIMIT_TYPE_ROUTE_LIST:
+                        return 6;
+                    case androidx.car.app.constraints.ConstraintManager.CONTENT_LIMIT_TYPE_PANE:
+                        return 4;
+                    case androidx.car.app.constraints.ConstraintManager.CONTENT_LIMIT_TYPE_PLACE_LIST:
+                    case androidx.car.app.constraints.ConstraintManager.CONTENT_LIMIT_TYPE_LIST:
+                    default:
+                        return 12;
+                }
+            }
             @Override public boolean isAppDrivenRefreshEnabled() { return true; }
         }
 

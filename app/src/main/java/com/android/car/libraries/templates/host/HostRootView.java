@@ -8,6 +8,7 @@ import android.graphics.Path;
 import android.graphics.Paint;
 import android.graphics.RectF;
 import android.graphics.Typeface;
+import android.graphics.drawable.Drawable;
 import android.view.MotionEvent;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
@@ -16,23 +17,35 @@ import android.widget.FrameLayout;
 
 import androidx.annotation.Nullable;
 import androidx.car.app.model.Action;
+import androidx.car.app.model.Alert;
 import androidx.car.app.model.CarText;
+import androidx.car.app.model.GridItem;
+import androidx.car.app.model.GridTemplate;
 import androidx.car.app.model.Item;
 import androidx.car.app.model.ItemList;
 import androidx.car.app.model.ListTemplate;
+import androidx.car.app.model.LongMessageTemplate;
 import androidx.car.app.model.MessageTemplate;
 import androidx.car.app.OnDoneCallback;
 import androidx.car.app.model.Pane;
 import androidx.car.app.model.PaneTemplate;
+import androidx.car.app.model.PlaceListMapTemplate;
 import androidx.car.app.model.Row;
 import androidx.car.app.model.SectionedItemList;
+import androidx.car.app.model.SectionedItemTemplate;
 import androidx.car.app.model.SearchTemplate;
+import androidx.car.app.model.Tab;
+import androidx.car.app.model.TabContents;
+import androidx.car.app.model.TabTemplate;
 import androidx.car.app.model.Template;
 import androidx.car.app.model.TemplateWrapper;
+import androidx.car.app.model.signin.SignInTemplate;
+import androidx.car.app.media.model.MediaPlaybackTemplate;
 import androidx.car.app.navigation.model.MapWithContentTemplate;
 import androidx.car.app.navigation.model.MapTemplate;
 import androidx.car.app.navigation.model.NavigationTemplate;
 import androidx.car.app.navigation.model.PlaceListNavigationTemplate;
+import androidx.car.app.navigation.model.RoutePreviewNavigationTemplate;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -59,7 +72,9 @@ final class HostRootView extends FrameLayout {
         boolean map = template instanceof MapTemplate
                 || template instanceof MapWithContentTemplate
                 || template instanceof NavigationTemplate
-                || template instanceof PlaceListNavigationTemplate;
+                || template instanceof PlaceListNavigationTemplate
+                || template instanceof PlaceListMapTemplate
+                || template instanceof RoutePreviewNavigationTemplate;
         mapSurface.setVisibility(map ? VISIBLE : INVISIBLE);
         templateView.setMapMode(map);
     }
@@ -70,6 +85,14 @@ final class HostRootView extends FrameLayout {
 
     void showToast(CharSequence text) {
         templateView.showToast(text);
+    }
+
+    void showAlert(Alert alert) {
+        templateView.showAlert(alert);
+    }
+
+    void dismissAlert(int alertId) {
+        templateView.dismissAlert(alertId);
     }
 
     void destroy() {
@@ -124,6 +147,8 @@ final class HostRootView extends FrameLayout {
         private final TemplatesHostService.RendererSession session;
         private final List<Hit> hits = new ArrayList<>();
         private TemplateWrapper wrapper;
+        private Alert alert;
+        private String searchText = "";
         private boolean mapMode;
         private Insets windowInsets = Insets.NONE;
         private Insets stableInsets = Insets.NONE;
@@ -156,6 +181,10 @@ final class HostRootView extends FrameLayout {
         void render(TemplateWrapper wrapper) {
             if (this.wrapper != wrapper) {
                 listScrollOffset = 0;
+                if (wrapper != null && wrapper.getTemplate() instanceof SearchTemplate) {
+                    searchText = ((SearchTemplate) wrapper.getTemplate()).getInitialSearchText();
+                    if (searchText == null) searchText = "";
+                }
             }
             this.wrapper = wrapper;
             invalidate();
@@ -173,6 +202,58 @@ final class HostRootView extends FrameLayout {
             removeCallbacks(clearToast);
             if (toast != null) {
                 postDelayed(clearToast, 3500L);
+            }
+        }
+
+        void showAlert(Alert alert) {
+            this.alert = alert;
+            invalidate();
+        }
+
+        void dismissAlert(int alertId) {
+            if (alert != null && alert.getId() == alertId) {
+                alert = null;
+                invalidate();
+            }
+        }
+
+        String getSearchText(int length) {
+            if (length <= 0 || length >= searchText.length()) return searchText;
+            return searchText.substring(Math.max(0, searchText.length() - length));
+        }
+
+        boolean deleteSearchText(int beforeLength) {
+            if (beforeLength <= 0 || searchText.isEmpty()) return true;
+            int start = Math.max(0, searchText.length() - beforeLength);
+            replaceSearchText(searchText.substring(0, start));
+            return true;
+        }
+
+        void replaceSearchText(String value) {
+            searchText = value == null ? "" : value;
+            Template template = wrapper == null ? null : wrapper.getTemplate();
+            if (template instanceof SearchTemplate
+                    && ((SearchTemplate) template).getSearchCallbackDelegate() != null) {
+                try {
+                    ((SearchTemplate) template).getSearchCallbackDelegate()
+                            .sendSearchTextChanged(searchText, new OnDoneCallback() {});
+                } catch (RuntimeException ignored) {
+                    // The remote app may be stopping; the next invalidate will refresh it.
+                }
+            }
+            invalidate();
+        }
+
+        void submitSearchText() {
+            Template template = wrapper == null ? null : wrapper.getTemplate();
+            if (template instanceof SearchTemplate
+                    && ((SearchTemplate) template).getSearchCallbackDelegate() != null) {
+                try {
+                    ((SearchTemplate) template).getSearchCallbackDelegate()
+                            .sendSearchSubmitted(searchText, new OnDoneCallback() {});
+                } catch (RuntimeException ignored) {
+                    // The remote app may be stopping; the next invalidate will refresh it.
+                }
             }
         }
 
@@ -237,10 +318,54 @@ final class HostRootView extends FrameLayout {
                 drawMessageTemplate(canvas, (MessageTemplate) template);
             } else if (template instanceof SearchTemplate) {
                 drawSearchTemplate(canvas, (SearchTemplate) template);
+            } else if (template instanceof GridTemplate) {
+                drawGridTemplate(canvas, (GridTemplate) template);
+            } else if (template instanceof LongMessageTemplate) {
+                drawLongMessageTemplate(canvas, (LongMessageTemplate) template);
+            } else if (template instanceof SignInTemplate) {
+                drawSignInTemplate(canvas, (SignInTemplate) template);
+            } else if (template instanceof TabTemplate) {
+                drawTabTemplate(canvas, (TabTemplate) template);
+            } else if (template instanceof SectionedItemTemplate) {
+                drawSectionedItemTemplate(canvas, (SectionedItemTemplate) template);
+            } else if (template instanceof PlaceListMapTemplate) {
+                drawPlaceListMapTemplate(canvas, (PlaceListMapTemplate) template);
+            } else if (template instanceof RoutePreviewNavigationTemplate) {
+                drawRoutePreviewTemplate(canvas, (RoutePreviewNavigationTemplate) template);
+            } else if (template instanceof MediaPlaybackTemplate) {
+                drawMediaPlaybackTemplate(canvas, (MediaPlaybackTemplate) template);
             } else {
                 text(canvas, template.getClass().getSimpleName(), 32, 58, 22, TEXT);
                 text(canvas, "This Caramel Vanilla host does not render this template yet.",
                         32, 94, 16, MUTED);
+            }
+            if (alert != null) {
+                drawAlert(canvas, alert);
+            }
+        }
+
+        private void drawAlert(Canvas canvas, Alert value) {
+            float left = dp(42);
+            float top = contentTop() + dp(18);
+            float right = getWidth() - dp(42);
+            float bottom = top + dp(155);
+            paint.setColor(Color.rgb(44, 47, 52));
+            paint.setStyle(Paint.Style.FILL);
+            canvas.drawRoundRect(left, top, right, bottom, dp(18), dp(18), paint);
+            addAlertHit(left, top, right, bottom, value.getCallbackDelegate(), value.getId(), null);
+            textBold(canvas, textOf(value.getTitle()), left + dp(26), top + dp(43), dp(22), TEXT);
+            drawWrappedText(canvas, textOf(value.getSubtitle()), left + dp(26), top + dp(76),
+                    right - left - dp(52), dp(16), MUTED);
+            float actionLeft = left + dp(24);
+            if (value.getActions() != null) {
+                for (Action action : value.getActions()) {
+                    drawAction(canvas, action, actionLeft, bottom - dp(58),
+                            actionLeft + dp(150), bottom - dp(10));
+                    addAlertHit(actionLeft, bottom - dp(58), actionLeft + dp(150),
+                            bottom - dp(10), value.getCallbackDelegate(), value.getId(),
+                            action.getOnClickDelegate());
+                    actionLeft += dp(162);
+                }
             }
         }
 
@@ -411,10 +536,185 @@ final class HostRootView extends FrameLayout {
             text(canvas, "Search", 48, 62, 24, TEXT);
             drawPanel(canvas, 48, 84, Math.min(getWidth() - 56, 570), 136);
             text(canvas, template.getSearchHint(), 72, 116, 17, MUTED);
-            text(canvas, template.getInitialSearchText(), 72, 158, 20, TEXT);
+            text(canvas, searchText, 72, 158, 20, TEXT);
             drawItems(canvas, template.getItemList(), 48, 258, Math.min(getWidth() - 56, 570));
             drawAction(canvas, template.getHeaderAction(), 48, 28, 210, 72);
             drawActionStrip(canvas, template.getActionStrip());
+        }
+
+        private void drawGridTemplate(Canvas canvas, GridTemplate template) {
+            drawPanel(canvas, 24, 20, Math.min(getWidth() - 24, 760), getHeight() - 28);
+            drawHeader(canvas, template.getTitle(), template.getHeaderAction(), 48, 28);
+            ItemList list = template.getSingleList();
+            if (list == null) {
+                text(canvas, template.isLoading() ? "Loading…" : "No items", 48, 126, 20, MUTED);
+            } else {
+                int columns = template.getItemSize() == GridTemplate.ITEM_SIZE_SMALL ? 4 : 3;
+                float cellWidth = Math.min(getWidth() - dp(96), dp(700)) / columns;
+                float x = dp(48);
+                float y = dp(118);
+                int column = 0;
+                for (Item item : list.getItems()) {
+                    if (!(item instanceof GridItem)) continue;
+                    GridItem gridItem = (GridItem) item;
+                    float cellLeft = x + column * cellWidth;
+                    drawGridItem(canvas, gridItem, cellLeft, y, cellWidth - dp(12));
+                    column++;
+                    if (column == columns) {
+                        column = 0;
+                        y += dp(155);
+                    }
+                }
+            }
+            drawActionList(canvas, template.getActions(), 48, getHeight() - dp(88));
+            drawActionStrip(canvas, template.getActionStrip());
+        }
+
+        private void drawGridItem(Canvas canvas, GridItem item, float left, float top,
+                                  float width) {
+            float height = dp(132);
+            drawPanel(canvas, left, top, left + width, top + height);
+            float imageSize = dp(54);
+            float imageX = left + width / 2;
+            float imageY = top + dp(42);
+            if (item.getImage() != null) {
+                drawCarIcon(canvas, item.getImage(), imageX, imageY, imageSize);
+            } else {
+                paint.setColor(Color.rgb(86, 92, 100));
+                canvas.drawCircle(imageX, imageY, imageSize / 2, paint);
+            }
+            String title = textOf(item.getTitle());
+            if (!title.isEmpty()) {
+                centerText(canvas, title, imageX, top + dp(92), dp(16), TEXT, width - dp(16));
+            }
+            String subtitle = textOf(item.getText());
+            if (!subtitle.isEmpty()) {
+                centerText(canvas, subtitle, imageX, top + dp(115), dp(13), MUTED,
+                        width - dp(16));
+            }
+            addHit(left, top, left + width, top + height, item.getOnClickDelegate());
+        }
+
+        private void drawLongMessageTemplate(Canvas canvas, LongMessageTemplate template) {
+            drawPanel(canvas, 24, 20, Math.min(getWidth() - 24, 760), getHeight() - 28);
+            drawHeader(canvas, template.getTitle(), template.getHeaderAction(), 48, 28);
+            drawWrappedText(canvas, textOf(template.getMessage()), dp(48), dp(130),
+                    Math.min(getWidth() - dp(96), dp(680)), dp(20), TEXT);
+            drawActionList(canvas, template.getActions(), 48, getHeight() - dp(150));
+            drawActionStrip(canvas, template.getActionStrip());
+        }
+
+        private void drawSignInTemplate(Canvas canvas, SignInTemplate template) {
+            drawPanel(canvas, 24, 20, Math.min(getWidth() - 24, 760), getHeight() - 28);
+            drawHeader(canvas, template.getTitle(), template.getHeaderAction(), 48, 28);
+            drawWrappedText(canvas, textOf(template.getInstructions()), dp(48), dp(132),
+                    Math.min(getWidth() - dp(96), dp(680)), dp(21), TEXT);
+            drawWrappedText(canvas, textOf(template.getAdditionalText()), dp(48), dp(230),
+                    Math.min(getWidth() - dp(96), dp(680)), dp(17), MUTED);
+            drawActionList(canvas, template.getActions(), 48, getHeight() - dp(150));
+            drawActionStrip(canvas, template.getActionStrip());
+        }
+
+        private void drawTabTemplate(Canvas canvas, TabTemplate template) {
+            canvas.drawColor(BG);
+            List<Tab> tabs = template.getTabs();
+            float tabWidth = tabs == null || tabs.isEmpty() ? getWidth() : getWidth() / (float) tabs.size();
+            if (tabs != null) {
+                for (int i = 0; i < tabs.size(); i++) {
+                    Tab tab = tabs.get(i);
+                    float left = i * tabWidth;
+                    boolean active = tab.getContentId().equals(template.getActiveTabContentId());
+                    if (active) {
+                        paint.setColor(ACCENT);
+                        canvas.drawRect(left, getHeight() - dp(7), left + tabWidth,
+                                getHeight(), paint);
+                    }
+                    centerText(canvas, textOf(tab.getTitle()), left + tabWidth / 2,
+                            dp(48), dp(18), active ? TEXT : MUTED, tabWidth - dp(12));
+                    addTabHit(left, 0, left + tabWidth, dp(78),
+                            template.getTabCallbackDelegate(), tab.getContentId());
+                }
+            }
+            TabContents contents = template.getTabContents();
+            if (contents != null && contents.getTemplate() != null) {
+                drawNestedTemplate(canvas, contents.getTemplate());
+            } else if (template.isLoading()) {
+                text(canvas, "Loading…", dp(48), dp(140), dp(20), MUTED);
+            }
+        }
+
+        private void drawNestedTemplate(Canvas canvas, Template nested) {
+            if (nested instanceof ListTemplate) {
+                drawListTemplate(canvas, (ListTemplate) nested);
+            } else if (nested instanceof GridTemplate) {
+                drawGridTemplate(canvas, (GridTemplate) nested);
+            } else if (nested instanceof PaneTemplate) {
+                drawPaneTemplate(canvas, (PaneTemplate) nested);
+            } else if (nested instanceof MessageTemplate) {
+                drawMessageTemplate(canvas, (MessageTemplate) nested);
+            } else if (nested instanceof MapWithContentTemplate) {
+                drawMapWithContent(canvas, (MapWithContentTemplate) nested);
+            } else {
+                text(canvas, nested.getClass().getSimpleName(), dp(48), dp(140), dp(20), TEXT);
+            }
+        }
+
+        private void drawSectionedItemTemplate(Canvas canvas, SectionedItemTemplate template) {
+            drawPanel(canvas, 24, 20, Math.min(getWidth() - 24, 760), getHeight() - 28);
+            androidx.car.app.model.Header header = template.getHeader();
+            drawHeader(canvas, header == null ? null : header.getTitle(),
+                    header == null ? null : header.getStartHeaderAction(), 48, 28);
+            float y = dp(122);
+            if (template.getSections() != null) {
+                for (androidx.car.app.model.Section<?> section : template.getSections()) {
+                    textBold(canvas, textOf(section.getTitle()), dp(48), y, dp(18), ACCENT);
+                    y += dp(34);
+                    text(canvas, section.getItemsDelegate().getSize() + " items", dp(48), y,
+                            dp(17), MUTED);
+                    y += dp(50);
+                }
+            }
+            drawActionList(canvas, template.getActions(), 48, getHeight() - dp(88));
+        }
+
+        private void drawPlaceListMapTemplate(Canvas canvas, PlaceListMapTemplate template) {
+            drawContentPanel(canvas, template.getItemList(), template.getTitle(),
+                    template.getHeaderAction(), true);
+            drawActionStrip(canvas, template.getActionStrip());
+            drawMapControls(canvas, panelTop(), panelBottom());
+        }
+
+        private void drawRoutePreviewTemplate(Canvas canvas,
+                                              RoutePreviewNavigationTemplate template) {
+            drawContentPanel(canvas, template.getItemList(), template.getTitle(),
+                    template.getHeaderAction(), true);
+            drawActionStrip(canvas, template.getActionStrip());
+            drawMapActionStack(canvas, template.getMapActionStrip(), panelTop(), panelBottom());
+            drawAction(canvas, template.getNavigateAction(), dp(48), panelBottom() - dp(76),
+                    dp(245), panelBottom() - dp(20));
+        }
+
+        private void drawMediaPlaybackTemplate(Canvas canvas, MediaPlaybackTemplate template) {
+            drawPanel(canvas, 24, 20, Math.min(getWidth() - 24, 760), getHeight() - 28);
+            androidx.car.app.model.Header header = template.getHeader();
+            drawHeader(canvas, header == null ? null : header.getTitle(),
+                    header == null ? null : header.getStartHeaderAction(), 48, 28);
+            text(canvas, "Media playback is provided by the AAOS media host.", dp(48), dp(150),
+                    dp(20), TEXT);
+            text(canvas, "This template host renders the app shell and delegates media sessions.",
+                    dp(48), dp(190), dp(16), MUTED);
+        }
+
+        private void drawHeader(Canvas canvas, @Nullable CarText title,
+                                @Nullable Action startAction, float x, float y) {
+            if (startAction != null && startAction.getType() == Action.TYPE_BACK) {
+                drawBackArrow(canvas, x + dp(8), y + dp(27));
+                addBackHit(y, x);
+            }
+            text(canvas, textOf(title), x + dp(56), y + dp(36), dp(27), TEXT);
+            if (startAction != null && startAction.getType() != Action.TYPE_BACK) {
+                drawAction(canvas, startAction, x, y, x + dp(150), y + dp(52));
+            }
         }
 
         private void drawAppHeader(Canvas canvas, @Nullable CarText title,
@@ -723,6 +1023,27 @@ final class HostRootView extends FrameLayout {
             hits.add(new Hit(new RectF(0, top, dp(90), top + dp(78)), true));
         }
 
+        private void addBackHit(float top, float left) {
+            hits.add(new Hit(new RectF(left, top, left + dp(90), top + dp(78)), true));
+        }
+
+        private void addTabHit(float left, float top, float right, float bottom,
+                               @Nullable androidx.car.app.model.TabCallbackDelegate delegate,
+                               String contentId) {
+            if (delegate != null && contentId != null) {
+                hits.add(new Hit(new RectF(left, top, right, bottom), delegate, contentId));
+            }
+        }
+
+        private void addAlertHit(float left, float top, float right, float bottom,
+                                 @Nullable androidx.car.app.model.AlertCallbackDelegate callback,
+                                 int alertId,
+                                 @Nullable androidx.car.app.model.OnClickDelegate delegate) {
+            if (callback != null) {
+                hits.add(new Hit(new RectF(left, top, right, bottom), callback, alertId, delegate));
+            }
+        }
+
         private void drawContentPanel(Canvas canvas, Template content, boolean overlay) {
             int right = Math.min(getWidth() - 20, 600);
             int top = 20;
@@ -744,6 +1065,17 @@ final class HostRootView extends FrameLayout {
                 text(canvas, content == null ? "Map" : content.getClass().getSimpleName(),
                         44, 60, 22, TEXT);
             }
+        }
+
+        private void drawContentPanel(Canvas canvas, @Nullable ItemList list,
+                                      @Nullable CarText title, @Nullable Action headerAction,
+                                      boolean overlay) {
+            int right = Math.min(getWidth() - 20, 600);
+            int top = 20;
+            int bottom = getHeight() - 24;
+            drawPanel(canvas, 20, top, right, bottom);
+            drawHeader(canvas, title, headerAction, 44, 24);
+            drawItems(canvas, list, 44, 104, right - 28);
         }
 
         private int drawItems(Canvas canvas, @Nullable ItemList list, int x, int y, int width) {
@@ -788,12 +1120,12 @@ final class HostRootView extends FrameLayout {
             drawActionList(canvas, pane.getActions(), x, y + 8);
         }
 
-        private void drawActionList(Canvas canvas, List<Action> actions, int x, int y) {
+        private void drawActionList(Canvas canvas, List<Action> actions, float x, float y) {
             if (actions == null) return;
-            int offset = 0;
+            float offset = 0;
             for (Action action : actions) {
-                drawAction(canvas, action, x + offset, y, x + offset + 150, y + 52);
-                offset += 162;
+                drawAction(canvas, action, x + offset, y, x + offset + dp(150), y + dp(52));
+                offset += dp(162);
             }
         }
 
@@ -808,8 +1140,8 @@ final class HostRootView extends FrameLayout {
             }
         }
 
-        private void drawAction(Canvas canvas, @Nullable Action action, int left, int top,
-                                int right, int bottom) {
+        private void drawAction(Canvas canvas, @Nullable Action action, float left, float top,
+                                float right, float bottom) {
             if (action == null) return;
             drawPanel(canvas, left, top, right, bottom);
             String label = textOf(action.getTitle());
@@ -849,6 +1181,35 @@ final class HostRootView extends FrameLayout {
             paint.setTextSize(size);
             paint.setTypeface(Typeface.create("sans", Typeface.NORMAL));
             canvas.drawText(value == null ? "" : value, x, y, paint);
+        }
+
+        private void centerText(Canvas canvas, String value, float centerX, float baseline,
+                                float size, int color, float maxWidth) {
+            paint.setTextSize(size);
+            String rendered = value == null ? "" : value;
+            while (rendered.length() > 1 && paint.measureText(rendered) > maxWidth) {
+                rendered = rendered.substring(0, rendered.length() - 1);
+            }
+            text(canvas, rendered, centerX - paint.measureText(rendered) / 2, baseline, size, color);
+        }
+
+        private void drawCarIcon(Canvas canvas, androidx.car.app.model.CarIcon carIcon,
+                                 float centerX, float centerY, float size) {
+            if (carIcon == null) return;
+            try {
+                Drawable drawable = carIcon.getIcon().loadDrawable(getContext());
+                if (drawable != null) {
+                    int half = Math.round(size / 2);
+                    drawable.setBounds(Math.round(centerX - half), Math.round(centerY - half),
+                            Math.round(centerX + half), Math.round(centerY + half));
+                    drawable.draw(canvas);
+                    return;
+                }
+            } catch (RuntimeException ignored) {
+                // Some app icons are remote-only; keep the stable placeholder below.
+            }
+            paint.setColor(Color.rgb(86, 92, 100));
+            canvas.drawCircle(centerX, centerY, size / 2, paint);
         }
 
         private void drawPin(Canvas canvas, float x, float y, float size) {
@@ -986,7 +1347,19 @@ final class HostRootView extends FrameLayout {
                     if (backPressed) {
                         session.onBackPressed();
                     } else if (hit != null && hit.bounds.contains(event.getX(), event.getY())) {
-                        if (hit.delegate != null) {
+                        if (hit.alertDelegate != null) {
+                            if (hit.delegate != null) {
+                                hit.delegate.sendClick(new OnDoneCallback() {});
+                            } else {
+                                hit.alertDelegate.sendDismiss(new OnDoneCallback() {});
+                            }
+                            if (alert != null && alert.getId() == hit.alertId) {
+                                alert = null;
+                                invalidate();
+                            }
+                        } else if (hit.tabDelegate != null) {
+                            hit.tabDelegate.sendTabSelected(hit.tabContentId, new OnDoneCallback() {});
+                        } else if (hit.delegate != null) {
                             hit.delegate.sendClick(new OnDoneCallback() {});
                         } else if (hit.toggle != null) {
                             hit.toggle.sendCheckedChange(!hit.checked, new OnDoneCallback() {});
@@ -1015,12 +1388,20 @@ final class HostRootView extends FrameLayout {
             final RectF bounds;
             final androidx.car.app.model.OnClickDelegate delegate;
             final androidx.car.app.model.OnCheckedChangeDelegate toggle;
+            final androidx.car.app.model.TabCallbackDelegate tabDelegate;
+            final String tabContentId;
+            final androidx.car.app.model.AlertCallbackDelegate alertDelegate;
+            final int alertId;
             final boolean checked;
             final boolean back;
             Hit(RectF bounds, androidx.car.app.model.OnClickDelegate delegate) {
                 this.bounds = bounds;
                 this.delegate = delegate;
                 this.toggle = null;
+                this.tabDelegate = null;
+                this.tabContentId = null;
+                this.alertDelegate = null;
+                this.alertId = -1;
                 this.checked = false;
                 this.back = false;
             }
@@ -1029,13 +1410,45 @@ final class HostRootView extends FrameLayout {
                 this.bounds = bounds;
                 this.delegate = null;
                 this.toggle = toggle;
+                this.tabDelegate = null;
+                this.tabContentId = null;
+                this.alertDelegate = null;
+                this.alertId = -1;
                 this.checked = checked;
+                this.back = false;
+            }
+            Hit(RectF bounds, androidx.car.app.model.TabCallbackDelegate tabDelegate,
+                String tabContentId) {
+                this.bounds = bounds;
+                this.delegate = null;
+                this.toggle = null;
+                this.tabDelegate = tabDelegate;
+                this.tabContentId = tabContentId;
+                this.alertDelegate = null;
+                this.alertId = -1;
+                this.checked = false;
+                this.back = false;
+            }
+            Hit(RectF bounds, androidx.car.app.model.AlertCallbackDelegate alertDelegate,
+                int alertId, androidx.car.app.model.OnClickDelegate delegate) {
+                this.bounds = bounds;
+                this.delegate = delegate;
+                this.toggle = null;
+                this.tabDelegate = null;
+                this.tabContentId = null;
+                this.alertDelegate = alertDelegate;
+                this.alertId = alertId;
+                this.checked = false;
                 this.back = false;
             }
             Hit(RectF bounds, boolean back) {
                 this.bounds = bounds;
                 this.delegate = null;
                 this.toggle = null;
+                this.tabDelegate = null;
+                this.tabContentId = null;
+                this.alertDelegate = null;
+                this.alertId = -1;
                 this.checked = false;
                 this.back = back;
             }

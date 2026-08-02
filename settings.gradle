@@ -8,3 +8,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "caramel-vanilla-templates-host"
 include(":app")
+include(":conformance-app")

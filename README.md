@@ -4,17 +4,26 @@ This is the open-source Android Automotive templates host for Caramel Vanilla.
 It implements the AndroidX Car App `RendererService` protocol and renders the
 serialized template models into a `SurfaceControlViewHost` surface.
 
-The first release is intentionally focused on navigation apps:
+The renderer is organized in two layers: `TemplatesHostService` owns the
+AndroidX binder handshake, app lifecycle, surface lifecycle, host callbacks,
+and input proxy; `HostRootView` owns model-to-pixel rendering and hit testing.
+That boundary is intentional so the host can grow without duplicating the
+fragile renderer protocol.
 
-* `PlaceListNavigationTemplate`
-* `NavigationTemplate`
-* `MapTemplate`
-* `MapWithContentTemplate`
-* `ListTemplate`, `PaneTemplate`, `MessageTemplate`, and `SearchTemplate`
-* list rows, action strips, header actions, and AndroidX click delegates
-* the navigation app map `SurfaceView` callback
-* AndroidX handshake, session lifecycle, app manager, navigation host, and
-  basic constraints host
+The current renderer covers every concrete AndroidX Car App 1.7 template type:
+
+* Navigation: `PlaceListNavigationTemplate`, `NavigationTemplate`,
+  `MapTemplate`, `MapWithContentTemplate`, `PlaceListMapTemplate`, and
+  `RoutePreviewNavigationTemplate`
+* Content: `ListTemplate`, `GridTemplate`, `SectionedItemTemplate`,
+  `PaneTemplate`, `MessageTemplate`, `LongMessageTemplate`, `SearchTemplate`,
+  `SignInTemplate`, and `TabTemplate`
+* Media shell: `MediaPlaybackTemplate` (playback itself remains owned by the
+  AAOS media host and the app's `MediaSession`)
+* rows, grid items, action strips, header actions, tabs, toggles, alerts, and
+  AndroidX click/search/tab delegates
+* navigation map surface callbacks, gesture forwarding, input proxy, app
+  invalidation, lifecycle recovery, content limits, and host callbacks
 
 The host targets Android API 30 and newer. It is designed to be installed as a
 privileged system app with the package name
@@ -40,7 +49,26 @@ profile used by Caramel Vanilla:
 ./scripts/check-settings-and-map.sh
 ```
 
-This is a minimal compatible renderer, not a claim of full parity with the
-proprietary Google Automotive App Host. Unsupported templates currently show a
-clear fallback view and are recorded in the product documentation as they are
-implemented.
+The implementation is open source and intentionally does not copy Google’s
+private renderer. Visual conformance is tested against the stock host on the
+Caramel Vanilla AVD. The contract smoke test is:
+
+```sh
+./scripts/check-template-coverage.sh
+```
+
+The optional conformance app emits the model family one mode at a time. It is
+useful for stock-host/custom-host screenshot comparisons:
+
+```sh
+./gradlew :conformance-app:assembleDebug
+adb install -r conformance-app/build/outputs/apk/debug/conformance-app-debug.apk
+adb shell am start -W -n com.android.car.libraries.templates.conformance/androidx.car.app.activity.CarAppActivity --es mode grid
+```
+
+Supported modes are `grid`, `long-message`, `sign-in`, `tabs`, `sections`,
+`place-map`, `route-preview`, `media`, `list`, `pane`, and `message`.
+
+The remaining parity work is device- and app-driven: richer icon/span
+rendering, virtualized remote list sections, voice/microphone integration,
+media-host tests, and pixel-level comparisons on additional display profiles.
