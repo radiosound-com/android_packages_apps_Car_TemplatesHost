@@ -31,6 +31,7 @@ import android.view.KeyEvent;
 import android.view.Surface;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
+import android.view.ScaleGestureDetector;
 import android.view.TextureView;
 import android.graphics.SurfaceTexture;
 import android.view.VelocityTracker;
@@ -218,6 +219,8 @@ final class HostRootView extends FrameLayout {
         private boolean backPressed;
         private Hit pressedHit;
         private VelocityTracker velocityTracker;
+        private final ScaleGestureDetector scaleDetector;
+        private boolean scaled;
         private float listMaxScroll;
         private Surface textureSurface;
         private final Runnable stopInput;
@@ -266,6 +269,21 @@ final class HostRootView extends FrameLayout {
             super(context);
             this.session = session;
             this.appIcon = appIcon;
+            this.scaleDetector = new ScaleGestureDetector(context,
+                    new ScaleGestureDetector.SimpleOnScaleGestureListener() {
+                        @Override public boolean onScaleBegin(ScaleGestureDetector detector) {
+                            return mapMode && pressedHit == null;
+                        }
+
+                        @Override public boolean onScale(ScaleGestureDetector detector) {
+                            if (!mapMode || pressedHit != null) return false;
+                            scaled = true;
+                            dragging = true;
+                            session.onMapScale(detector.getFocusX(), detector.getFocusY(),
+                                    detector.getScaleFactor());
+                            return true;
+                        }
+                    });
             this.stopInput = session::stopInput;
             this.stopLocalInput = this::stopLocalInput;
             // The hosted surface also supplies the local editor used by
@@ -1834,13 +1852,16 @@ final class HostRootView extends FrameLayout {
                 if (pressedHit == null && mapMode) {
                     dragging = false;
                 }
+                scaled = false;
                 velocityTracker = VelocityTracker.obtain();
                 velocityTracker.addMovement(event);
+                scaleDetector.onTouchEvent(event);
                 return true;
             }
             if (velocityTracker != null) {
                 velocityTracker.addMovement(event);
             }
+            scaleDetector.onTouchEvent(event);
             if (action == MotionEvent.ACTION_MOVE) {
                 float dx = event.getX() - lastX;
                 float dy = event.getY() - lastY;
@@ -1857,7 +1878,8 @@ final class HostRootView extends FrameLayout {
                 }
                 if (listDragging) {
                     scrollListBy(dy);
-                } else if (pressedHit == null && mapMode) {
+                } else if (pressedHit == null && mapMode && !scaled
+                        && !scaleDetector.isInProgress() && event.getPointerCount() == 1) {
                     // AndroidX's map callback uses scroll-distance semantics
                     // (previous pointer position minus current position). That
                     // makes the rendered map move opposite the finger, like a
@@ -1873,7 +1895,10 @@ final class HostRootView extends FrameLayout {
                     velocityTracker.computeCurrentVelocity(1000);
                 }
                 if (pressedHit == null && mapMode) {
-                    if (dragging && velocityTracker != null) {
+                    if (scaled) {
+                        // A pinch is a complete gesture; do not turn its final
+                        // pointer-up into a click or fling.
+                    } else if (dragging && velocityTracker != null) {
                         float vx = velocityTracker.getXVelocity();
                         float vy = velocityTracker.getYVelocity();
                         if (Math.hypot(vx, vy) > 100) {
