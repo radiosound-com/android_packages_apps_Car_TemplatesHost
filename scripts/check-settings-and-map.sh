@@ -9,40 +9,79 @@ set -eu
 ADB=${ADB:-adb}
 DISPLAY_ID=${DISPLAY_ID:-4619827259835644672}
 PACKAGE=${PACKAGE:-net.osmand.dev}
+INPUT_SOURCE=${INPUT_SOURCE:-mouse}
 COMPONENT="$PACKAGE/androidx.car.app.activity.CarAppActivity"
 tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/caramel-vanilla-host-interaction.XXXXXX")
 trap 'rm -rf "$tmp_dir"' EXIT
+
+"$ADB" logcat -c
 
 capture() {
     "$ADB" exec-out screencap -p -d "$DISPLAY_ID" > "$2"
 }
 
-"$ADB" shell am force-stop "$PACKAGE"
-"$ADB" shell am start -W -n "$COMPONENT" >/dev/null
-sleep 12
+swipe() {
+    "$ADB" shell input "$INPUT_SOURCE" swipe "$@"
+}
+
+start_map() {
+    "$ADB" shell am force-stop "$PACKAGE"
+    "$ADB" shell am start -W -n "$COMPONENT" >/dev/null
+    sleep 12
+    # Car App resumes its last screen. The map screen has no back affordance
+    # at this coordinate, while the persisted Settings screen does.
+    "$ADB" shell input tap 40 87
+    sleep 2
+}
+
+start_map
 capture /sdcard/caramel-vanilla-map-before.png "$tmp_dir/map-before.png"
-"$ADB" shell input swipe 700 300 850 300 500
+swipe 700 300 850 300 500
 sleep 1
 capture /sdcard/caramel-vanilla-map-after-right.png "$tmp_dir/map-after-right.png"
 
-"$ADB" shell am force-stop "$PACKAGE"
-"$ADB" shell am start -W -n "$COMPONENT" >/dev/null
-sleep 12
+start_map
+capture /sdcard/caramel-vanilla-map-before-left.png "$tmp_dir/map-before-left.png"
+swipe 700 300 550 300 100
+sleep 1
+capture /sdcard/caramel-vanilla-map-after-left.png "$tmp_dir/map-after-left.png"
+
+start_map
+capture /sdcard/caramel-vanilla-map-before-reversal.png "$tmp_dir/map-before-reversal.png"
+swipe 700 300 600 300 100
+sleep 1
+capture /sdcard/caramel-vanilla-map-after-first-reversal.png "$tmp_dir/map-after-first-reversal.png"
+swipe 600 300 800 300 500
+sleep 1
+capture /sdcard/caramel-vanilla-map-after-reversal.png "$tmp_dir/map-after-reversal.png"
+
+"$ADB" logcat -c
+swipe 700 300 550 300 5000
+sleep 1
+slow_input_ms=$("$ADB" logcat -d -v threadtime \
+    | rg 'InputDispatcher: Embedded\{.*\} spent [0-9]{4,}ms processing MotionEvent' \
+    | sed -E 's/.* spent ([0-9]+)ms.*/\1/' | sort -nr | head -1 || true)
+slow_input_ms=${slow_input_ms:-0}
+
+start_map
 capture /sdcard/caramel-vanilla-map-before-down.png "$tmp_dir/map-before-down.png"
-"$ADB" shell input swipe 850 300 850 450 500
+swipe 850 300 850 450 500
 sleep 1
 capture /sdcard/caramel-vanilla-map-after-down.png "$tmp_dir/map-after-down.png"
 
-"$ADB" shell am force-stop "$PACKAGE"
-"$ADB" shell am start -W -n "$COMPONENT" >/dev/null
-sleep 2
+start_map
 "$ADB" shell input tap 970 98
 sleep 2
 capture /sdcard/caramel-vanilla-settings.png "$tmp_dir/settings.png"
+surface_failures=$("$ADB" logcat -d -v brief | rg -c \
+    'Surface lost, forcing relayout|Key was rejected by service|createGraphicBuffer failed' || echo 0)
 
 python3 - "$tmp_dir/map-before.png" "$tmp_dir/map-after-right.png" \
-    "$tmp_dir/map-before-down.png" "$tmp_dir/map-after-down.png" \
-    "$tmp_dir/settings.png" <<'PY'
+    "$tmp_dir/map-before-left.png" "$tmp_dir/map-after-left.png" \
+    "$tmp_dir/map-before-reversal.png" "$tmp_dir/map-after-first-reversal.png" \
+    "$tmp_dir/map-after-reversal.png" "$tmp_dir/map-before-down.png" \
+    "$tmp_dir/map-after-down.png" "$tmp_dir/settings.png" \
+    "$surface_failures" "$slow_input_ms" <<'PY'
 import struct
 import sys
 import zlib
@@ -107,6 +146,48 @@ def pixel(rows, x, y):
     return tuple(rows[y][x * 4:x * 4 + 4])
 
 
+def location_marker_center_x(rows):
+    points = set()
+    for y in range(70, 530):
+        for x in range(405, 1070):
+            if pixel(rows, x, y)[:3] == (35, 123, 255):
+                points.add((x, y))
+    components = []
+    while points:
+        stack = [points.pop()]
+        component = []
+        while stack:
+            x, y = stack.pop()
+            component.append((x, y))
+            for neighbor in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
+                if neighbor in points:
+                    points.remove(neighbor)
+                    stack.append(neighbor)
+        width = max(x for x, _ in component) - min(x for x, _ in component) + 1
+        height = max(y for _, y in component) - min(y for _, y in component) + 1
+        if len(component) >= 100 and 15 <= width <= 35 and 15 <= height <= 35:
+            components.append(component)
+    if not components:
+        return None
+    component = max(components, key=len)
+    return (min(x for x, _ in component) + max(x for x, _ in component)) // 2
+
+
+def location_marker_center(rows):
+    """Find OsmAnd's blue location marker in the stable center column."""
+    ys = []
+    for y in range(70, 530):
+        matching = 0
+        for x in range(500, 580):
+            if pixel(rows, x, y)[:3] == (35, 123, 255):
+                matching += 1
+        if matching >= 5:
+            ys.append(y)
+    if not ys:
+        return None
+    return (min(ys) + max(ys)) // 2
+
+
 def near(value, expected, tolerance):
     return all(abs(value[i] - expected[i]) <= tolerance for i in range(3))
 
@@ -118,8 +199,9 @@ def bright_neutral(value):
 def shift_error(reference, moved, shift_x, shift_y):
     """Compare map content after a candidate translation.
 
-    A negative shift means the rendered map content moved left/up for a
-    right/down finger drag, matching a paper map dragged under a finger.
+    A negative shift means the rendered map content moved left/up; a positive
+    shift means it moved right/down, matching a paper map dragged under a
+    finger.
     """
     _, _, reference_rows = reference
     _, _, moved_rows = moved
@@ -145,11 +227,20 @@ def shift_error(reference, moved, shift_x, shift_y):
 
 before_right = decode_png(sys.argv[1])
 after_right = decode_png(sys.argv[2])
-before_down = decode_png(sys.argv[3])
-after_down = decode_png(sys.argv[4])
-settings = decode_png(sys.argv[5])
+before_left = decode_png(sys.argv[3])
+after_left = decode_png(sys.argv[4])
+before_reversal = decode_png(sys.argv[5])
+after_first_reversal = decode_png(sys.argv[6])
+after_reversal = decode_png(sys.argv[7])
+before_down = decode_png(sys.argv[8])
+after_down = decode_png(sys.argv[9])
+settings = decode_png(sys.argv[10])
+surface_failures = int(sys.argv[11])
+slow_input_ms = int(sys.argv[12])
 if any(image[:2] != (1080, 600) for image in
-       (before_right, after_right, before_down, after_down, settings)):
+       (before_right, after_right, before_left, after_left, before_down,
+        after_down, before_reversal, after_first_reversal, after_reversal,
+        settings)):
     raise SystemExit("FAIL: expected 1080x600 screenshots")
 
 _, _, before_rows = before_right
@@ -168,11 +259,19 @@ for y in range(100, 500):
             map_diffs += 1
 
 right_scores = [(shift_error(before_right, after_right, shift, 0), shift)
-                for shift in range(-220, 221, 10)]
+                for shift in range(-500, 501, 10)]
+left_scores = [(shift_error(before_left, after_left, shift, 0), shift)
+               for shift in range(-500, 501, 10)]
 down_scores = [(shift_error(before_down, after_down, 0, shift), shift)
-               for shift in range(-220, 221, 10)]
+               for shift in range(-500, 501, 10)]
 right_shift = min(right_scores)[1]
+left_shift = min(left_scores)[1]
 down_shift = min(down_scores)[1]
+before_reversal_marker = location_marker_center_x(before_reversal[2])
+after_first_reversal_marker = location_marker_center_x(after_first_reversal[2])
+after_reversal_marker = location_marker_center_x(after_reversal[2])
+before_down_marker = location_marker_center(before_down[2])
+after_down_marker = location_marker_center(after_down[2])
 history_pixels = [(x, y) for y in range(205, 244) for x in range(20, 65)
                   if bright_neutral(pixel(before_rows, x, y))]
 history_bounds = (
@@ -184,7 +283,15 @@ checks = {
     "map is rendered before gesture": map_active > 10000,
     "map responds to a swipe": map_diffs > 1000,
     "rightward finger drag moves map left": right_shift < -20,
-    "downward finger drag moves map up": down_shift < -20,
+    "leftward finger drag moves map right after release": left_shift > 20,
+    "reversing drag cancels previous inertia": before_reversal_marker is not None
+        and after_first_reversal_marker is not None
+        and after_reversal_marker is not None
+        and after_first_reversal_marker > before_reversal_marker + 20
+        and after_reversal_marker < after_first_reversal_marker - 20,
+    "downward finger drag moves map up": before_down_marker is not None
+        and after_down_marker is not None
+        and after_down_marker < before_down_marker - 20,
     "history icon has stock circular-arrow geometry": len(history_pixels) > 260
         and history_bounds[0] <= 30 and history_bounds[1] >= 55
         and history_bounds[3] >= 236,
@@ -192,13 +299,23 @@ checks = {
     "settings toolbar back affordance exists": max(pixel(settings_rows, 40, 87)[:3]) > 100,
     "settings switch is rendered": max(pixel(settings_rows, 994, 167)[:3]) > 50
         and max(pixel(settings_rows, 994, 167)[:3]) - min(pixel(settings_rows, 994, 167)[:3]) < 12,
+    "host has no rejected-surface loop": surface_failures < 10,
+    "map drag does not block input dispatch": slow_input_ms < 1000,
 }
 failed = [name for name, passed in checks.items() if not passed]
 if failed:
     for name in failed:
         print("FAIL:", name)
     print("map_active=", map_active, "map_diffs=", map_diffs,
-          "right_shift=", right_shift, "down_shift=", down_shift,
+          "right_shift=", right_shift, "left_shift=", left_shift,
+          "down_shift=", down_shift,
+          "before_reversal_marker=", before_reversal_marker,
+          "after_first_reversal_marker=", after_first_reversal_marker,
+          "after_reversal_marker=", after_reversal_marker,
+          "before_down_marker=", before_down_marker,
+          "after_down_marker=", after_down_marker,
+          "surface_failures=", surface_failures,
+          "slow_input_ms=", slow_input_ms,
           "history_pixels=", len(history_pixels), "history_bounds=", history_bounds)
     raise SystemExit(1)
 print("PASS: settings layout and map gesture behavior match the stock host profile")

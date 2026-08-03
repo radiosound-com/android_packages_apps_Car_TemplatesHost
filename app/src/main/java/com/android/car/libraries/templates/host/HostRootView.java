@@ -16,6 +16,7 @@
 package com.android.car.libraries.templates.host;
 
 import android.content.Context;
+import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Insets;
@@ -25,14 +26,16 @@ import android.graphics.PorterDuff;
 import android.graphics.RectF;
 import android.graphics.Typeface;
 import android.graphics.drawable.Drawable;
+import android.media.Image;
+import android.media.ImageReader;
+import android.os.Handler;
+import android.os.HandlerThread;
+import android.graphics.PixelFormat;
 import android.text.InputType;
 import android.view.MotionEvent;
 import android.view.KeyEvent;
 import android.view.Surface;
-import android.view.SurfaceHolder;
-import android.view.SurfaceView;
-import android.view.TextureView;
-import android.graphics.SurfaceTexture;
+import android.view.View;
 import android.view.VelocityTracker;
 import android.view.inputmethod.BaseInputConnection;
 import android.view.inputmethod.EditorInfo;
@@ -96,6 +99,11 @@ final class HostRootView extends FrameLayout {
         setBackgroundColor(Color.TRANSPARENT);
         mapSurface = new MapSurfaceView(context, session);
         templateView = new TemplateCanvasView(context, session, densityDpi, appIcon);
+        // Keep the published map surface attached for the lifetime of the
+        // hosted surface. The car app owns this Surface and may continue
+        // drawing while it transitions to a non-map template; detaching it
+        // leaves the renderer targeting a rejected buffer queue.
+        addView(mapSurface, new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
         addView(templateView, new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
     }
 
@@ -108,17 +116,10 @@ final class HostRootView extends FrameLayout {
                 || template instanceof PlaceListNavigationTemplate
                 || template instanceof PlaceListMapTemplate
                 || template instanceof RoutePreviewNavigationTemplate;
-        // SurfaceView keeps a separately-composited buffer. INVISIBLE/GONE do
-        // not reliably remove that buffer from the host window, so detach it
-        // completely for normal templates and attach it only for map content.
-        boolean attached = mapSurface.getParent() != null;
-        if (map && !attached) {
-            addView(mapSurface, 0,
-                    new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
-            mapSurface.setVisibility(VISIBLE);
-        } else if (!map && attached) {
-            removeView(mapSurface);
-        }
+        // TemplateCanvasView is opaque for non-map templates, so the attached
+        // map surface remains hidden behind it without invalidating the
+        // renderer-owned buffer.
+        mapSurface.setVisibility(VISIBLE);
         setBackgroundColor(map ? Color.TRANSPARENT : TemplateCanvasView.BG);
         templateView.setMapMode(map);
         templateView.bringToFront();
@@ -149,41 +150,134 @@ final class HostRootView extends FrameLayout {
         return super.dispatchKeyEvent(event);
     }
 
-    static final class MapSurfaceView extends SurfaceView implements SurfaceHolder.Callback {
+    static final class MapSurfaceView extends View {
         private final TemplatesHostService.RendererSession session;
+        private final HandlerThread imageThread = new HandlerThread("CaramelTemplatesHost-MapImages");
+        private final Handler imageHandler;
+        private ImageReader imageReader;
+        private Surface surface;
+        private Bitmap pendingBitmap;
+        private boolean bitmapDeliveryPosted;
         private boolean ready;
 
         MapSurfaceView(Context context, TemplatesHostService.RendererSession session) {
             super(context);
             this.session = session;
-            getHolder().addCallback(this);
-            setZOrderMediaOverlay(false);
+            imageThread.start();
+            imageHandler = new Handler(imageThread.getLooper());
+            setWillNotDraw(true);
         }
 
         boolean isReady() {
-            return ready && getHolder().getSurface() != null && getHolder().getSurface().isValid();
+            return ready && surface != null && surface.isValid();
         }
 
-        @Override public void surfaceCreated(SurfaceHolder holder) {
+        Surface getSurface() {
+            return surface;
+        }
+
+        @Override protected void onSizeChanged(int width, int height, int oldWidth, int oldHeight) {
+            super.onSizeChanged(width, height, oldWidth, oldHeight);
+            if (width <= 0 || height <= 0 || (imageReader != null
+                    && imageReader.getWidth() == width && imageReader.getHeight() == height)) {
+                return;
+            }
+            replaceImageReader(width, height);
+        }
+
+        private void replaceImageReader(int width, int height) {
+            destroyImageReader(true);
+            imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 3);
+            imageReader.setOnImageAvailableListener(this::onImageAvailable, imageHandler);
+            surface = imageReader.getSurface();
             ready = true;
             session.publishMapSurface();
         }
 
-        @Override public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
-            if (ready) session.publishMapSurface();
+        private void onImageAvailable(ImageReader reader) {
+            Image image = null;
+            if (ready) {
+                try {
+                    image = reader.acquireLatestImage();
+                    if (image != null) {
+                        Bitmap bitmap = copyImage(image);
+                        if (bitmap != null) postBitmap(bitmap);
+                    }
+                } catch (RuntimeException ignored) {
+                    // The reader may be closed while a frame is being delivered.
+                } finally {
+                    if (image != null) image.close();
+                }
+            }
         }
 
-        @Override public void surfaceDestroyed(SurfaceHolder holder) {
+        private Bitmap copyImage(Image image) {
+            Image.Plane plane = image.getPlanes()[0];
+            int width = image.getWidth();
+            int height = image.getHeight();
+            int pixelStride = plane.getPixelStride();
+            int rowStride = plane.getRowStride();
+            int rowBytes = width * pixelStride;
+            if (pixelStride != 4) return null;
+            Bitmap bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+            java.nio.ByteBuffer source = plane.getBuffer().duplicate();
+            if (rowStride == rowBytes) {
+                bitmap.copyPixelsFromBuffer(source);
+                return bitmap;
+            }
+            byte[] row = new byte[rowBytes];
+            byte[] packed = new byte[rowBytes * height];
+            for (int y = 0; y < height; y++) {
+                source.position(y * rowStride);
+                source.get(row, 0, rowBytes);
+                System.arraycopy(row, 0, packed, y * rowBytes, rowBytes);
+            }
+            bitmap.copyPixelsFromBuffer(java.nio.ByteBuffer.wrap(packed));
+            return bitmap;
+        }
+
+        private void postBitmap(Bitmap bitmap) {
+            synchronized (this) {
+                if (pendingBitmap != null) pendingBitmap.recycle();
+                pendingBitmap = bitmap;
+                if (bitmapDeliveryPosted) return;
+                bitmapDeliveryPosted = true;
+            }
+            post(() -> {
+                Bitmap delivered;
+                synchronized (MapSurfaceView.this) {
+                    delivered = pendingBitmap;
+                    pendingBitmap = null;
+                    bitmapDeliveryPosted = false;
+                }
+                if (delivered != null) session.onMapBitmap(delivered);
+            });
+        }
+
+        private void destroyImageReader(boolean notify) {
+            if (notify && ready) {
+                session.destroyMapSurface(surface, getWidth(), getHeight());
+            }
             ready = false;
+            surface = null;
+            if (imageReader != null) {
+                imageReader.close();
+                imageReader = null;
+            }
+            synchronized (this) {
+                if (pendingBitmap != null) pendingBitmap.recycle();
+                pendingBitmap = null;
+                bitmapDeliveryPosted = false;
+            }
         }
 
         void destroy() {
-            ready = false;
-            getHolder().removeCallback(this);
+            destroyImageReader(true);
+            imageThread.quitSafely();
         }
     }
 
-    static final class TemplateCanvasView extends TextureView {
+    static final class TemplateCanvasView extends View {
         private static final int BG = Color.rgb(19, 19, 19);
         private static final int PANEL = Color.rgb(43, 43, 43);
         private static final int PANEL_ALT = Color.rgb(68, 68, 68);
@@ -202,6 +296,7 @@ final class HostRootView extends FrameLayout {
         private TemplateWrapper wrapper;
         private final Drawable appIcon;
         private Alert alert;
+        private Bitmap mapBitmap;
         private String searchText = "";
         private String composingText = "";
         private boolean mapMode;
@@ -219,7 +314,7 @@ final class HostRootView extends FrameLayout {
         private Hit pressedHit;
         private VelocityTracker velocityTracker;
         private float listMaxScroll;
-        private Surface textureSurface;
+        private boolean redrawPosted;
         private final Runnable stopInput;
         private final Runnable stopLocalInput;
             private final InputConnection localInputConnection = new BaseInputConnection(this, true) {
@@ -273,58 +368,33 @@ final class HostRootView extends FrameLayout {
             // the search field is tapped.
             setFocusable(false);
             setFocusableInTouchMode(false);
-            // SurfaceControlViewHost publishes a transparent window. TextureView
-            // gives the renderer an opaque child buffer so the template does not
-            // inherit the translucent CarAppActivity backdrop.
-            setOpaque(true);
             paint.setTypeface(Typeface.create("sans", Typeface.NORMAL));
-            setSurfaceTextureListener(new SurfaceTextureListener() {
-                @Override public void onSurfaceTextureAvailable(SurfaceTexture surface,
-                                                                  int width, int height) {
-                    textureSurface = new Surface(surface);
-                    post(TemplateCanvasView.this::redrawSurface);
-                }
+        }
 
-                @Override public void onSurfaceTextureSizeChanged(SurfaceTexture surface,
-                                                                   int width, int height) {
-                    post(TemplateCanvasView.this::redrawSurface);
-                }
+        @Override protected void onDraw(Canvas canvas) {
+            super.onDraw(canvas);
+            drawFrame(canvas);
+        }
 
-                @Override public boolean onSurfaceTextureDestroyed(SurfaceTexture surface) {
-                    if (textureSurface != null) {
-                        textureSurface.release();
-                        textureSurface = null;
-                    }
-                    return true;
-                }
-
-                @Override public void onSurfaceTextureUpdated(SurfaceTexture surface) { }
+        private void requestRedraw() {
+            if (redrawPosted) return;
+            redrawPosted = true;
+            post(() -> {
+                redrawPosted = false;
+                invalidate();
             });
-        }
-
-        @Override public void invalidate() {
-            super.invalidate();
-            post(this::redrawSurface);
-        }
-
-        private void redrawSurface() {
-            if (textureSurface == null || !textureSurface.isValid()) return;
-            Canvas canvas = null;
-            try {
-                canvas = textureSurface.lockCanvas(null);
-                if (canvas != null) drawFrame(canvas);
-            } catch (RuntimeException ignored) {
-                // The SurfaceTexture can disappear between the validity check
-                // and lockCanvas during an activity transition.
-            } finally {
-                if (canvas != null) textureSurface.unlockCanvasAndPost(canvas);
-            }
         }
 
         void setMapMode(boolean mapMode) {
             this.mapMode = mapMode;
-            setOpaque(!mapMode);
-            invalidate();
+            requestRedraw();
+        }
+
+        void setMapBitmap(Bitmap bitmap) {
+            Bitmap previous = mapBitmap;
+            mapBitmap = bitmap;
+            if (previous != null && previous != bitmap) previous.recycle();
+            requestRedraw();
         }
 
         void render(TemplateWrapper wrapper) {
@@ -336,7 +406,7 @@ final class HostRootView extends FrameLayout {
                 }
             }
             this.wrapper = wrapper;
-            invalidate();
+            requestRedraw();
             boolean searchTemplate = wrapper != null
                     && wrapper.getTemplate() instanceof SearchTemplate;
             setFocusable(true);
@@ -361,12 +431,12 @@ final class HostRootView extends FrameLayout {
         void setWindowInsets(Insets insets, Insets stableInsets) {
             this.windowInsets = insets == null ? Insets.NONE : insets;
             this.stableInsets = stableInsets == null ? Insets.NONE : stableInsets;
-            invalidate();
+            requestRedraw();
         }
 
         void showToast(CharSequence text) {
             toast = text == null ? null : text.toString();
-            invalidate();
+            requestRedraw();
             removeCallbacks(clearToast);
             if (toast != null) {
                 postDelayed(clearToast, 3500L);
@@ -375,13 +445,13 @@ final class HostRootView extends FrameLayout {
 
         void showAlert(Alert alert) {
             this.alert = alert;
-            invalidate();
+            requestRedraw();
         }
 
         void dismissAlert(int alertId) {
             if (alert != null && alert.getId() == alertId) {
                 alert = null;
-                invalidate();
+                requestRedraw();
             }
         }
 
@@ -409,7 +479,7 @@ final class HostRootView extends FrameLayout {
                     // The remote app may be stopping; the next invalidate will refresh it.
                 }
             }
-            invalidate();
+            requestRedraw();
         }
 
         private void setComposingLocalSearchText(String value) {
@@ -483,7 +553,7 @@ final class HostRootView extends FrameLayout {
 
         private final Runnable clearToast = () -> {
             toast = null;
-            invalidate();
+            requestRedraw();
         };
 
         private float dp(float value) {
@@ -515,9 +585,10 @@ final class HostRootView extends FrameLayout {
             Template template = wrapper == null ? null : wrapper.getTemplate();
             if (!mapMode) {
                 canvas.drawColor(BG);
+            } else if (mapBitmap != null) {
+                canvas.drawBitmap(mapBitmap, 0, 0, null);
             } else {
-                // Leave the map surface visible and only paint the overlay/panel.
-                canvas.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR);
+                canvas.drawColor(Color.LTGRAY);
             }
             if (template == null) {
                 text(canvas, "Waiting for car app template…", 32, 52, 22, TEXT);
@@ -993,7 +1064,7 @@ final class HostRootView extends FrameLayout {
             int size = section.getItemsDelegate().getSize();
             if (size <= 0) {
                 sectionItems.put(section, new ArrayList<>());
-                invalidate();
+                requestRedraw();
                 return;
             }
             try {
@@ -1018,7 +1089,7 @@ final class HostRootView extends FrameLayout {
                                     // remote delegate cannot be decoded.
                                 }
                                 sectionItems.put(section, items);
-                                invalidate();
+                                requestRedraw();
                             }
                         });
             } catch (RuntimeException ignored) {
@@ -1403,7 +1474,7 @@ final class HostRootView extends FrameLayout {
         private void scrollListBy(float distance) {
             listScrollOffset = Math.max(0, Math.min(listMaxScroll,
                     listScrollOffset - distance));
-            invalidate();
+            requestRedraw();
         }
 
         private void textBold(Canvas canvas, String value, float x, float y, float size, int color) {
@@ -1832,6 +1903,10 @@ final class HostRootView extends FrameLayout {
                     listDragging = true;
                 }
                 if (pressedHit == null && mapMode) {
+                    // The automotive surface callback has no ACTION_DOWN
+                    // method. Cancel host-owned inertia before a new drag so
+                    // an earlier fling cannot fight the new finger direction.
+                    session.cancelMapInertia();
                     dragging = false;
                 }
                 velocityTracker = VelocityTracker.obtain();
@@ -1858,10 +1933,10 @@ final class HostRootView extends FrameLayout {
                 if (listDragging) {
                     scrollListBy(dy);
                 } else if (pressedHit == null && mapMode) {
-                    // AndroidX's map callback uses scroll-distance semantics
-                    // (previous pointer position minus current position). That
-                    // makes the rendered map move opposite the finger, like a
-                    // paper map held underneath it.
+                    // The OsmAnd surface renderer applies the callback
+                    // distance as the inverse content translation. Pass the
+                    // raw finger delta so a leftward finger move shifts map
+                    // content right, like a paper map held underneath it.
                     session.onMapScroll(dx, dy);
                 }
                 lastX = event.getX();
@@ -1877,6 +1952,9 @@ final class HostRootView extends FrameLayout {
                         float vx = velocityTracker.getXVelocity();
                         float vy = velocityTracker.getYVelocity();
                         if (Math.hypot(vx, vy) > 100) {
+                            // Keep inertia in the same coordinate space as
+                            // the scroll callback. The session owns the
+                            // cancellable deceleration loop.
                             session.onMapFling(vx, vy);
                         }
                     } else if (!dragging && action == MotionEvent.ACTION_UP) {
@@ -1897,7 +1975,7 @@ final class HostRootView extends FrameLayout {
                             }
                             if (alert != null && alert.getId() == hit.alertId) {
                                 alert = null;
-                                invalidate();
+                                requestRedraw();
                             }
                         } else if (hit.tabDelegate != null) {
                             hit.tabDelegate.sendTabSelected(hit.tabContentId, new OnDoneCallback() {});
@@ -1909,7 +1987,7 @@ final class HostRootView extends FrameLayout {
                             if (hit.toggleKey != null) {
                                 toggleOverrides.put(hit.toggleKey, checked);
                             }
-                            invalidate();
+                            requestRedraw();
                         }
                     }
                 }

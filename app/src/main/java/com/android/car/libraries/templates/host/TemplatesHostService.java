@@ -82,6 +82,8 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.io.FileOutputStream;
 import java.io.IOException;
 
@@ -206,7 +208,23 @@ public final class TemplatesHostService extends Service {
         private final ServiceConnection appConnection = new AppConnection();
         private ICarApp carApp;
         private IAppManager appManager;
-        private ISurfaceCallback appSurfaceCallback;
+        private volatile ISurfaceCallback appSurfaceCallback;
+        private ISurfaceCallback publishedMapCallback;
+        private Surface publishedMapSurface;
+        private int publishedMapWidth;
+        private int publishedMapHeight;
+        private final Object mapGestureLock = new Object();
+        private final ExecutorService mapGestureExecutor = Executors.newSingleThreadExecutor(
+                runnable -> {
+                    Thread thread = new Thread(runnable, "CaramelTemplatesHost-MapGestures");
+                    thread.setDaemon(true);
+                    return thread;
+                });
+        private float pendingScrollX;
+        private float pendingScrollY;
+        private boolean mapScrollDrainScheduled;
+        private long mapInertiaGeneration;
+        private boolean mapGestureTerminated;
         private Intent launchIntent;
         private boolean appHandshakeComplete;
         private boolean appCreated;
@@ -301,20 +319,105 @@ public final class TemplatesHostService extends Service {
         }
 
         void onMapScroll(float distanceX, float distanceY) {
-            if (appSurfaceCallback == null) return;
+            synchronized (mapGestureLock) {
+                if (mapGestureTerminated) return;
+                pendingScrollX += distanceX;
+                pendingScrollY += distanceY;
+                if (mapScrollDrainScheduled) return;
+                mapScrollDrainScheduled = true;
+            }
             try {
-                appSurfaceCallback.onScroll(distanceX, distanceY);
-            } catch (RemoteException e) {
-                Log.e(TAG, "Unable to forward map scroll", e);
+                mapGestureExecutor.execute(this::drainMapScroll);
+            } catch (RuntimeException ignored) {
+                synchronized (mapGestureLock) {
+                    mapScrollDrainScheduled = false;
+                }
             }
         }
 
         void onMapFling(float velocityX, float velocityY) {
-            if (appSurfaceCallback == null) return;
+            final long generation;
+            synchronized (mapGestureLock) {
+                if (mapGestureTerminated) return;
+                generation = ++mapInertiaGeneration;
+            }
             try {
-                appSurfaceCallback.onFling(velocityX, velocityY);
+                mapGestureExecutor.execute(
+                        () -> runMapInertia(velocityX, velocityY, generation));
+            } catch (RuntimeException ignored) {
+            }
+        }
+
+        void cancelMapInertia() {
+            synchronized (mapGestureLock) {
+                mapInertiaGeneration++;
+            }
+        }
+
+        private void runMapInertia(float velocityX, float velocityY, long generation) {
+            float speed = (float) Math.hypot(velocityX, velocityY);
+            if (speed <= 1) return;
+            float maxSpeed = 1600;
+            if (speed > maxSpeed) {
+                float scale = maxSpeed / speed;
+                velocityX *= scale;
+                velocityY *= scale;
+                speed = maxSpeed;
+            }
+            float directionX = velocityX / speed;
+            float directionY = velocityY / speed;
+            final float deceleration = 5000;
+            final float frameSeconds = 0.016f;
+            while (speed > 0) {
+                synchronized (mapGestureLock) {
+                    if (mapGestureTerminated || generation != mapInertiaGeneration) return;
+                }
+                float nextSpeed = Math.max(0, speed - deceleration * frameSeconds);
+                float distance = (speed + nextSpeed) * .5f * frameSeconds;
+                forwardMapScroll(directionX * distance, directionY * distance);
+                speed = nextSpeed;
+                if (speed > 0) {
+                    try {
+                        Thread.sleep(16);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        return;
+                    }
+                }
+            }
+        }
+
+        private void drainMapScroll() {
+            while (true) {
+                float distanceX;
+                float distanceY;
+                synchronized (mapGestureLock) {
+                    if (mapGestureTerminated) {
+                        pendingScrollX = 0;
+                        pendingScrollY = 0;
+                        mapScrollDrainScheduled = false;
+                        return;
+                    }
+                    distanceX = pendingScrollX;
+                    distanceY = pendingScrollY;
+                    pendingScrollX = 0;
+                    pendingScrollY = 0;
+                    if (distanceX == 0 && distanceY == 0) {
+                        mapScrollDrainScheduled = false;
+                        return;
+                    }
+                }
+                forwardMapScroll(distanceX, distanceY);
+            }
+        }
+
+        private void forwardMapScroll(float distanceX, float distanceY) {
+            ISurfaceCallback callback = appSurfaceCallback;
+            if (callback == null) return;
+            try {
+                callback.onScroll(distanceX, distanceY);
             } catch (RemoteException e) {
-                Log.e(TAG, "Unable to forward map fling", e);
+                Log.e(TAG, "Unable to forward map scroll", e);
             }
         }
 
@@ -352,6 +455,14 @@ public final class TemplatesHostService extends Service {
         }
 
         void terminate() {
+            synchronized (mapGestureLock) {
+                mapGestureTerminated = true;
+                mapInertiaGeneration++;
+                pendingScrollX = 0;
+                pendingScrollY = 0;
+                mapScrollDrainScheduled = false;
+            }
+            mapGestureExecutor.shutdownNow();
             if (inputSession == this) {
                 inputSession = null;
                 try {
@@ -1021,21 +1132,65 @@ public final class TemplatesHostService extends Service {
         }
 
         void publishMapSurface() {
-            if (rootView == null || appSurfaceCallback == null || !rootView.mapSurface.isReady()) {
+            HostRootView currentRoot = rootView;
+            ISurfaceCallback callback = appSurfaceCallback;
+            if (currentRoot == null || callback == null || !currentRoot.mapSurface.isReady()) {
+                return;
+            }
+            try {
+                Surface surface = currentRoot.mapSurface.getSurface();
+                int width = currentRoot.mapSurface.getWidth();
+                int height = currentRoot.mapSurface.getHeight();
+                boolean surfaceChanged = callback != publishedMapCallback
+                        || surface != publishedMapSurface
+                        || width != publishedMapWidth
+                        || height != publishedMapHeight;
+                SurfaceContainer container = new SurfaceContainer(
+                        surface, width, height, currentRoot.densityDpi);
+                if (surfaceChanged) {
+                    callback.onSurfaceAvailable(Bundleable.create(container), new Done("mapSurface"));
+                    publishedMapCallback = callback;
+                    publishedMapSurface = surface;
+                    publishedMapWidth = width;
+                    publishedMapHeight = height;
+                }
+                Rect area = new Rect(0, 0, width, height);
+                callback.onVisibleAreaChanged(area, new Done("visibleArea"));
+                callback.onStableAreaChanged(area, new Done("stableArea"));
+            } catch (RemoteException | BundlerException e) {
+                Log.e(TAG, "Unable to publish map surface", e);
+            }
+        }
+
+        void onMapBitmap(android.graphics.Bitmap bitmap) {
+            main.post(() -> {
+                if (rootView == null) {
+                    bitmap.recycle();
+                } else {
+                    rootView.templateView.setMapBitmap(bitmap);
+                }
+            });
+        }
+
+        void destroyMapSurface(Surface surface, int width, int height) {
+            ISurfaceCallback callback = appSurfaceCallback;
+            if (callback == null || publishedMapCallback != callback) {
+                publishedMapCallback = null;
+                publishedMapSurface = null;
                 return;
             }
             try {
                 SurfaceContainer container = new SurfaceContainer(
-                        rootView.mapSurface.getHolder().getSurface(),
-                        rootView.mapSurface.getWidth(),
-                        rootView.mapSurface.getHeight(),
-                        rootView.densityDpi);
-                appSurfaceCallback.onSurfaceAvailable(Bundleable.create(container), new Done("mapSurface"));
-                Rect area = new Rect(0, 0, rootView.mapSurface.getWidth(), rootView.mapSurface.getHeight());
-                appSurfaceCallback.onVisibleAreaChanged(area, new Done("visibleArea"));
-                appSurfaceCallback.onStableAreaChanged(area, new Done("stableArea"));
+                        surface, Math.max(1, width), Math.max(1, height),
+                        rootView == null ? 0 : rootView.densityDpi);
+                callback.onSurfaceDestroyed(Bundleable.create(container), new Done("mapSurfaceDestroyed"));
             } catch (RemoteException | BundlerException e) {
-                Log.e(TAG, "Unable to publish map surface", e);
+                Log.e(TAG, "Unable to destroy map surface", e);
+            } finally {
+                publishedMapCallback = null;
+                publishedMapSurface = null;
+                publishedMapWidth = 0;
+                publishedMapHeight = 0;
             }
         }
 
