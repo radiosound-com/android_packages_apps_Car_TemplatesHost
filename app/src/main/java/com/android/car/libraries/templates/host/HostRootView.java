@@ -315,6 +315,7 @@ final class HostRootView extends FrameLayout {
         private VelocityTracker velocityTracker;
         private float listMaxScroll;
         private boolean redrawPosted;
+        private Hit rotaryTarget;
         private final Runnable stopInput;
         private final Runnable stopLocalInput;
             private final InputConnection localInputConnection = new BaseInputConnection(this, true) {
@@ -582,6 +583,7 @@ final class HostRootView extends FrameLayout {
 
         private void drawFrame(Canvas canvas) {
             hits.clear();
+            rotaryTarget = null;
             Template template = wrapper == null ? null : wrapper.getTemplate();
             if (!mapMode) {
                 canvas.drawColor(BG);
@@ -770,7 +772,12 @@ final class HostRootView extends FrameLayout {
                 // selections. The stock host does not outline the first switch
                 // when the list is initially shown; ordinary clickable rows in
                 // the conformance list retain the stock initial focus outline.
-                if (first && row.getToggle() == null) {
+                boolean visible = rowTop + rowHeight > scrollContentTop()
+                        && rowTop < contentBottom();
+                boolean canFocusRow = row.getOnClickDelegate() != null
+                        && row.getToggle() == null;
+                if ((first && row.getToggle() == null)
+                        || (rotaryTarget == null && visible && canFocusRow)) {
                     drawSelectionPanel(canvas, 54, rowTop, getWidth() - 54, rowTop + rowHeight);
                 }
                 first = false;
@@ -801,8 +808,9 @@ final class HostRootView extends FrameLayout {
                             rowTop + (hasText ? dp(47) : dp(30)), checked);
                     rowToggleChecked = checked;
                 }
+                Hit rotaryRow = null;
                 if (row.getOnClickDelegate() != null) {
-                    addHit(dp(70), rowTop, getWidth() - dp(70), rowTop + rowHeight,
+                    rotaryRow = addHit(dp(70), rowTop, getWidth() - dp(70), rowTop + rowHeight,
                             row.getOnClickDelegate());
                 }
                 // Put the checked-change delegate on top of a row click
@@ -811,9 +819,12 @@ final class HostRootView extends FrameLayout {
                 // itself or the row body.
                 if (row.getToggle() != null
                         && row.getToggle().getOnCheckedChangeDelegate() != null) {
-                    addToggleHit(dp(70), rowTop, getWidth() - dp(70), rowTop + rowHeight,
+                    rotaryRow = addToggleHit(dp(70), rowTop, getWidth() - dp(70), rowTop + rowHeight,
                             row.getToggle().getOnCheckedChangeDelegate(),
                             rowToggleChecked, textOf(row.getTitle()));
+                }
+                if (rotaryTarget == null && visible && rotaryRow != null) {
+                    rotaryTarget = rotaryRow;
                 }
                 if (rowIndex + 1 < rowCount) {
                     paint.setColor(DIVIDER);
@@ -905,7 +916,10 @@ final class HostRootView extends FrameLayout {
                     if (!(item instanceof GridItem)) continue;
                     GridItem gridItem = (GridItem) item;
                     float cellLeft = x + column * cellWidth;
-                    drawGridItem(canvas, gridItem, cellLeft, y, cellWidth - 12, itemIndex == 0);
+                    int firstVisibleItem = Math.max(0,
+                            ((int) (listScrollOffset / 168)) * columns);
+                    drawGridItem(canvas, gridItem, cellLeft, y, cellWidth - 12,
+                            itemIndex == firstVisibleItem);
                     itemIndex++;
                     column++;
                     if (column == columns) {
@@ -946,7 +960,8 @@ final class HostRootView extends FrameLayout {
             if (!subtitle.isEmpty()) {
                 centerText(canvas, subtitle, imageX, top + 150, 14, MUTED, width - 16);
             }
-            addHit(left, top, left + width, top + height, item.getOnClickDelegate());
+            Hit hit = addHit(left, top, left + width, top + height, item.getOnClickDelegate());
+            if (selected && hit != null) rotaryTarget = hit;
         }
 
         private void drawLongMessageTemplate(Canvas canvas, LongMessageTemplate template) {
@@ -1589,8 +1604,12 @@ final class HostRootView extends FrameLayout {
                 paint.setColor(DIVIDER);
                 canvas.drawRect(x, rowTop + rowHeight - 1,
                         x + width, rowTop + rowHeight, paint);
-                addHit(x, rowTop, x + width, rowTop + rowHeight,
+                Hit hit = addHit(x, rowTop, x + width, rowTop + rowHeight,
                         row.getOnClickDelegate());
+                if (rotaryTarget == null && hit != null
+                        && rowTop + rowHeight > y && rowTop < contentBottom()) {
+                    rotaryTarget = hit;
+                }
                 rowTop += rowHeight;
             }
             return rowTop + scrollOffset;
@@ -1712,18 +1731,21 @@ final class HostRootView extends FrameLayout {
             }
         }
 
-        private void addHit(float left, float top, float right, float bottom,
-                            @Nullable androidx.car.app.model.OnClickDelegate delegate) {
-            if (delegate != null) hits.add(new Hit(new RectF(left, top, right, bottom), delegate));
+        private Hit addHit(float left, float top, float right, float bottom,
+                           @Nullable androidx.car.app.model.OnClickDelegate delegate) {
+            if (delegate == null) return null;
+            Hit hit = new Hit(new RectF(left, top, right, bottom), delegate);
+            hits.add(hit);
+            return hit;
         }
 
-        private void addToggleHit(float left, float top, float right, float bottom,
-                                  androidx.car.app.model.OnCheckedChangeDelegate delegate,
-                                  boolean checked, String toggleKey) {
-            if (delegate != null) {
-                hits.add(new Hit(new RectF(left, top, right, bottom), delegate, checked,
-                        toggleKey));
-            }
+        private Hit addToggleHit(float left, float top, float right, float bottom,
+                                 androidx.car.app.model.OnCheckedChangeDelegate delegate,
+                                 boolean checked, String toggleKey) {
+            if (delegate == null) return null;
+            Hit hit = new Hit(new RectF(left, top, right, bottom), delegate, checked, toggleKey);
+            hits.add(hit);
+            return hit;
         }
 
         private void title(Canvas canvas, @Nullable CarText title, int x, int y) {
@@ -1967,28 +1989,7 @@ final class HostRootView extends FrameLayout {
                     } else if (backPressed) {
                         session.onBackPressed();
                     } else if (hit != null && hit.bounds.contains(event.getX(), event.getY())) {
-                        if (hit.alertDelegate != null) {
-                            if (hit.delegate != null) {
-                                hit.delegate.sendClick(new OnDoneCallback() {});
-                            } else {
-                                hit.alertDelegate.sendDismiss(new OnDoneCallback() {});
-                            }
-                            if (alert != null && alert.getId() == hit.alertId) {
-                                alert = null;
-                                requestRedraw();
-                            }
-                        } else if (hit.tabDelegate != null) {
-                            hit.tabDelegate.sendTabSelected(hit.tabContentId, new OnDoneCallback() {});
-                        } else if (hit.delegate != null) {
-                            hit.delegate.sendClick(new OnDoneCallback() {});
-                        } else if (hit.toggle != null) {
-                            boolean checked = !hit.checked;
-                            hit.toggle.sendCheckedChange(checked, new OnDoneCallback() {});
-                            if (hit.toggleKey != null) {
-                                toggleOverrides.put(hit.toggleKey, checked);
-                            }
-                            requestRedraw();
-                        }
+                        activateHit(hit);
                     }
                 }
                 if (velocityTracker != null) {
@@ -1998,6 +1999,39 @@ final class HostRootView extends FrameLayout {
                 pressedHit = null;
                 return true;
             }
+            return true;
+        }
+
+        private void activateHit(Hit hit) {
+            if (hit.back) {
+                session.onBackPressed();
+            } else if (hit.alertDelegate != null) {
+                if (hit.delegate != null) {
+                    hit.delegate.sendClick(new OnDoneCallback() {});
+                } else {
+                    hit.alertDelegate.sendDismiss(new OnDoneCallback() {});
+                }
+                if (alert != null && alert.getId() == hit.alertId) {
+                    alert = null;
+                    requestRedraw();
+                }
+            } else if (hit.tabDelegate != null) {
+                hit.tabDelegate.sendTabSelected(hit.tabContentId, new OnDoneCallback() {});
+            } else if (hit.delegate != null) {
+                hit.delegate.sendClick(new OnDoneCallback() {});
+            } else if (hit.toggle != null) {
+                boolean checked = !hit.checked;
+                hit.toggle.sendCheckedChange(checked, new OnDoneCallback() {});
+                if (hit.toggleKey != null) {
+                    toggleOverrides.put(hit.toggleKey, checked);
+                }
+                requestRedraw();
+            }
+        }
+
+        private boolean activateRotaryTarget() {
+            if (rotaryTarget == null) return false;
+            activateHit(rotaryTarget);
             return true;
         }
 
@@ -2032,15 +2066,27 @@ final class HostRootView extends FrameLayout {
         }
 
         boolean handleRotaryKey(KeyEvent event) {
-            if (event == null || event.getAction() != KeyEvent.ACTION_DOWN) return false;
+            if (event == null) return false;
+            int keyCode = event.getKeyCode();
+            if (keyCode == KeyEvent.KEYCODE_BACK || keyCode == KeyEvent.KEYCODE_ESCAPE) {
+                if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
+                    session.onBackPressed();
+                }
+                return true;
+            }
+            if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
+            if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER
+                    || keyCode == KeyEvent.KEYCODE_ENTER) {
+                return activateRotaryTarget();
+            }
             if (isScrollableTemplate()) {
-                if (event.getKeyCode() == KeyEvent.KEYCODE_DPAD_DOWN
-                        || event.getKeyCode() == KeyEvent.KEYCODE_PAGE_DOWN) {
+                if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN
+                        || keyCode == KeyEvent.KEYCODE_PAGE_DOWN) {
                     scrollListBy(-dp(72));
                     return true;
                 }
-                if (event.getKeyCode() == KeyEvent.KEYCODE_DPAD_UP
-                        || event.getKeyCode() == KeyEvent.KEYCODE_PAGE_UP) {
+                if (keyCode == KeyEvent.KEYCODE_DPAD_UP
+                        || keyCode == KeyEvent.KEYCODE_PAGE_UP) {
                     scrollListBy(dp(72));
                     return true;
                 }

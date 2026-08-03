@@ -23,6 +23,10 @@ for contract in \
     'onCreateInputConnection' \
     'sendSearchTextChanged' \
     'sendSearchSubmitted' \
+    'handleRotaryKey' \
+    'KEYCODE_DPAD_CENTER' \
+    'KEYCODE_BACK' \
+    'activateRotaryTarget' \
     'showAlert' \
     'dismissAlert' \
     'openMicrophone' \
