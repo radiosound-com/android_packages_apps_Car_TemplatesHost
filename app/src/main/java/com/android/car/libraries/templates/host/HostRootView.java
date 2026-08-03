@@ -1862,7 +1862,7 @@ final class HostRootView extends FrameLayout {
                     // (previous pointer position minus current position). That
                     // makes the rendered map move opposite the finger, like a
                     // paper map held underneath it.
-                    session.onMapScroll(dx, dy);
+                    session.onMapScroll(-dx, -dy);
                 }
                 lastX = event.getX();
                 lastY = event.getY();
