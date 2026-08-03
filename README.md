@@ -90,7 +90,5 @@ After installing the conformance APK, the complete AVD matrix is:
 ./scripts/check-conformance-matrix.sh
 ```
 
-The remaining parity work is device- and app-driven: richer icon/span
-rendering, virtualized remote list sections, recording-device permission
-policy, media-host tests, and pixel-level comparisons on additional display
-profiles.
+Remaining parity work is tracked in the
+[Templates Host GitHub issues](https://github.com/radiosound-com/android_packages_apps_Car_TemplatesHost/issues).
