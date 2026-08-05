@@ -560,6 +560,12 @@ public final class TemplatesHostService extends Service {
                 return;
             }
             Context displayContext = createDisplayContext(display);
+            // SurfaceControlViewHost requires a visual/window context. A bare
+            // display context works for resources but triggers Android 16's
+            // non-visual-context checks during setView(), which can leave the
+            // hosted surface without a frame after task transitions.
+            Context windowContext = displayContext.createWindowContext(
+                    android.view.WindowManager.LayoutParams.TYPE_APPLICATION, null);
             // The renderer wrapper reports the app-side density (171 dpi on the
             // emulator), but the stock host publishes the physical display
             // density (120 dpi) to the car app's map surface. Passing the
@@ -572,9 +578,9 @@ public final class TemplatesHostService extends Service {
                 // A renderer client may disappear between the handshake and
                 // surface creation; the host can still render without its icon.
             }
-            rootView = new HostRootView(displayContext, surfaceDensityDpi, this, appIcon);
+            rootView = new HostRootView(windowContext, surfaceDensityDpi, this, appIcon);
             rootView.setWindowInsets(windowInsets, stableInsets);
-            surfaceHost = new SurfaceControlViewHost(displayContext, display, wrapper.getHostToken());
+            surfaceHost = new SurfaceControlViewHost(windowContext, display, wrapper.getHostToken());
             surfaceHost.setView(rootView, Math.max(1, wrapper.getWidth()),
                     Math.max(1, wrapper.getHeight()));
             try {

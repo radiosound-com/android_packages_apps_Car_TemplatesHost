@@ -25,6 +25,7 @@ import android.graphics.PorterDuff;
 import android.graphics.RectF;
 import android.graphics.Typeface;
 import android.graphics.drawable.Drawable;
+import android.os.SystemClock;
 import android.text.InputType;
 import android.view.MotionEvent;
 import android.view.KeyEvent;
@@ -34,6 +35,7 @@ import android.view.SurfaceView;
 import android.view.ScaleGestureDetector;
 import android.view.TextureView;
 import android.graphics.SurfaceTexture;
+import android.util.Log;
 import android.view.VelocityTracker;
 import android.view.inputmethod.BaseInputConnection;
 import android.view.inputmethod.EditorInfo;
@@ -45,6 +47,7 @@ import androidx.annotation.Nullable;
 import androidx.car.app.model.Action;
 import androidx.car.app.model.Alert;
 import androidx.car.app.model.CarText;
+import androidx.car.app.model.Distance;
 import androidx.car.app.model.GridItem;
 import androidx.car.app.model.GridTemplate;
 import androidx.car.app.model.Item;
@@ -72,15 +75,22 @@ import androidx.car.app.serialization.BundlerException;
 import androidx.car.app.media.model.MediaPlaybackTemplate;
 import androidx.car.app.navigation.model.MapWithContentTemplate;
 import androidx.car.app.navigation.model.MapTemplate;
+import androidx.car.app.navigation.model.Maneuver;
+import androidx.car.app.navigation.model.MessageInfo;
 import androidx.car.app.navigation.model.NavigationTemplate;
 import androidx.car.app.navigation.model.PlaceListNavigationTemplate;
 import androidx.car.app.navigation.model.RoutePreviewNavigationTemplate;
+import androidx.car.app.navigation.model.RoutingInfo;
+import androidx.car.app.navigation.model.Step;
+import androidx.car.app.navigation.model.TravelEstimate;
 
+import java.util.Date;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -209,6 +219,14 @@ final class HostRootView extends FrameLayout {
         private Insets windowInsets = Insets.NONE;
         private Insets stableInsets = Insets.NONE;
         private String toast;
+        private static final long NAVIGATION_CONTROLS_TIMEOUT_MS = 10000L;
+        private long navigationControlsVisibleUntil;
+        private NavigationTemplate.NavigationInfo lastNavigationInfo;
+        private TravelEstimate lastNavigationEstimate;
+        private final Runnable hideNavigationControls = () -> {
+            navigationControlsVisibleUntil = 0;
+            invalidate();
+        };
         private float listScrollOffset;
         private float downX;
         private float downY;
@@ -220,6 +238,7 @@ final class HostRootView extends FrameLayout {
         private Hit pressedHit;
         private VelocityTracker velocityTracker;
         private final ScaleGestureDetector scaleDetector;
+        private int scaleDebugCount;
         private boolean scaled;
         private float listMaxScroll;
         private Surface textureSurface;
@@ -272,13 +291,27 @@ final class HostRootView extends FrameLayout {
             this.scaleDetector = new ScaleGestureDetector(context,
                     new ScaleGestureDetector.SimpleOnScaleGestureListener() {
                         @Override public boolean onScaleBegin(ScaleGestureDetector detector) {
-                            return mapMode && pressedHit == null;
+                            boolean accepted = mapMode && pressedHit == null;
+                            Log.i("CaramelTemplatesHost", "scaleBegin accepted=" + accepted
+                                    + " mapMode=" + mapMode + " pressedHit=" + (pressedHit != null)
+                                    + " focus=" + detector.getFocusX() + "," + detector.getFocusY());
+                            return accepted;
                         }
 
                         @Override public boolean onScale(ScaleGestureDetector detector) {
-                            if (!mapMode || pressedHit != null) return false;
+                            if (!mapMode || pressedHit != null) {
+                                Log.w("CaramelTemplatesHost", "scaleRejected mapMode=" + mapMode
+                                        + " pressedHit=" + (pressedHit != null));
+                                return false;
+                            }
                             scaled = true;
                             dragging = true;
+                            scaleDebugCount++;
+                            if (scaleDebugCount == 1 || scaleDebugCount % 5 == 0) {
+                                Log.i("CaramelTemplatesHost", "scale count=" + scaleDebugCount
+                                        + " factor=" + detector.getScaleFactor()
+                                        + " focus=" + detector.getFocusX() + "," + detector.getFocusY());
+                            }
                             session.onMapScale(detector.getFocusX(), detector.getFocusY(),
                                     detector.getScaleFactor());
                             return true;
@@ -346,6 +379,20 @@ final class HostRootView extends FrameLayout {
         }
 
         void render(TemplateWrapper wrapper) {
+            Template incomingTemplate = wrapper == null ? null : wrapper.getTemplate();
+            if (incomingTemplate instanceof NavigationTemplate) {
+                NavigationTemplate navigation = (NavigationTemplate) incomingTemplate;
+                if (navigation.getNavigationInfo() != null) {
+                    lastNavigationInfo = navigation.getNavigationInfo();
+                }
+                if (navigation.getDestinationTravelEstimate() != null) {
+                    lastNavigationEstimate = navigation.getDestinationTravelEstimate();
+                }
+            } else {
+                lastNavigationInfo = null;
+                lastNavigationEstimate = null;
+                navigationControlsVisibleUntil = 0;
+            }
             if (this.wrapper != wrapper) {
                 listScrollOffset = 0;
                 if (wrapper != null && wrapper.getTemplate() instanceof SearchTemplate) {
@@ -611,7 +658,7 @@ final class HostRootView extends FrameLayout {
 
         private void drawMapWithContent(Canvas canvas, MapWithContentTemplate template) {
             drawContentPanel(canvas, template.getContentTemplate(), true);
-            drawActionStrip(canvas, template.getActionStrip());
+            drawMapActionStrip(canvas, template.getActionStrip(), panelTop() + dp(42), true);
         }
 
         private void drawPlaceListNavigation(Canvas canvas, PlaceListNavigationTemplate template) {
@@ -620,7 +667,17 @@ final class HostRootView extends FrameLayout {
             float right = Math.min(getWidth() - dp(12), left + dp(520));
             float bottom = panelBottom();
             drawPanel(canvas, left, top, right, bottom);
-            drawAppHeader(canvas, template.getTitle(), left, top, right);
+            androidx.car.app.model.Header header = template.getHeader();
+            CarText title = header == null ? template.getTitle() : header.getTitle();
+            Action headerAction = header == null
+                    ? template.getHeaderAction() : header.getStartHeaderAction();
+            if (headerAction != null && headerAction.getType() == Action.TYPE_BACK) {
+                drawHeader(canvas, title, headerAction, left + dp(12), top + dp(10));
+                paint.setColor(DIVIDER);
+                canvas.drawRect(left, top + dp(84) - 1, right, top + dp(84), paint);
+            } else {
+                drawAppHeader(canvas, title, left, top, right);
+            }
             drawRows(canvas, template.getItemList(), left, top + dp(84), right, true);
             drawMapActionStrip(canvas, template.getActionStrip(), top + dp(42));
             drawMapActionStack(canvas, template.getMapActionStrip(), top, bottom);
@@ -637,17 +694,254 @@ final class HostRootView extends FrameLayout {
         }
 
         private void drawNavigationTemplate(Canvas canvas, NavigationTemplate template) {
-            float left = dp(12);
-            float bottom = panelBottom();
-            float top = Math.max(panelTop(), bottom - dp(168));
-            float right = Math.min(getWidth() - dp(12), left + dp(520));
-            drawPanel(canvas, left, top, right, bottom);
-            text(canvas, "Navigation", left + dp(32), top + dp(53), dp(27), TEXT);
-            text(canvas, "Map surface supplied to the app", left + dp(32),
-                    top + dp(88), dp(19), MUTED);
-            drawMapActionStrip(canvas, template.getActionStrip(), panelTop() + dp(42));
-            drawMapActionStack(canvas, template.getMapActionStrip(), panelTop(), bottom);
+            NavigationTemplate.NavigationInfo info = template.getNavigationInfo();
+            if (info == null) info = lastNavigationInfo;
+            if (info instanceof RoutingInfo) {
+                drawRoutingInfo(canvas, (RoutingInfo) info);
+            } else if (info instanceof MessageInfo) {
+                drawNavigationMessage(canvas, (MessageInfo) info);
+            } else {
+                drawNavigationWaiting(canvas);
+            }
+            TravelEstimate estimate = template.getDestinationTravelEstimate();
+            if (estimate == null) estimate = lastNavigationEstimate;
+            drawNavigationTripEstimate(canvas, estimate);
+            drawNavigationSpeed(canvas);
+            if (navigationControlsVisible()) {
+                drawNavigationActionStrip(canvas, template.getActionStrip());
+                drawNavigationMapActionStack(canvas, template.getMapActionStrip());
+            }
             drawToast(canvas);
+        }
+
+        private void drawNavigationWaiting(Canvas canvas) {
+            float left = dp(18);
+            float top = contentTop() + dp(10);
+            float right = Math.min(getWidth() - dp(18), left + dp(420));
+            float bottom = top + dp(88);
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(Color.rgb(25, 30, 34));
+            canvas.drawRoundRect(left, top, right, bottom, dp(12), dp(12), paint);
+            text(canvas, "Navigation", left + dp(18), top + dp(35), dp(24), TEXT);
+            text(canvas, "Waiting for route guidance…", left + dp(18), top + dp(65),
+                    dp(19), MUTED);
+        }
+
+        private void drawNavigationActionStrip(Canvas canvas,
+                                               @Nullable androidx.car.app.model.ActionStrip strip) {
+            if (strip == null || strip.getActions().isEmpty()) return;
+            List<Action> actions = strip.getActions();
+            int first = Math.max(0, actions.size() - 3);
+            float right = getWidth() - dp(18);
+            float centerY = contentTop() + dp(50);
+            for (int i = actions.size() - 1; i >= first; i--) {
+                Action action = actions.get(i);
+                String label = textOf(action.getTitle());
+                if (!label.isEmpty()) {
+                    float left = right - dp(150);
+                    paint.setColor(Color.BLACK);
+                    paint.setStyle(Paint.Style.FILL);
+                    canvas.drawRoundRect(left, centerY - dp(36), right,
+                            centerY + dp(36), dp(36), dp(36), paint);
+                    centerText(canvas, label, (left + right) / 2, centerY + dp(8), dp(20),
+                            TEXT, right - left - dp(20));
+                    addHit(left, centerY - dp(36), right, centerY + dp(36),
+                            action.getOnClickDelegate());
+                    right = left - dp(12);
+                } else {
+                    float centerX = right - dp(40);
+                    paint.setColor(Color.BLACK);
+                    paint.setStyle(Paint.Style.FILL);
+                    canvas.drawCircle(centerX, centerY, dp(40), paint);
+                    drawNavigationActionIcon(canvas, action, centerX, centerY,
+                            i == actions.size() - 2);
+                    addHit(centerX - dp(40), centerY - dp(40), centerX + dp(40),
+                            centerY + dp(40), action.getOnClickDelegate());
+                    right = centerX - dp(58);
+                }
+            }
+        }
+
+        private void drawNavigationActionIcon(Canvas canvas, Action action, float x, float y,
+                                               boolean settingsSlot) {
+            String label = textOf(action.getTitle()).toLowerCase(Locale.US);
+            if (settingsSlot || label.contains("setting")) {
+                drawActionIcon(canvas, action, x, y, true);
+                return;
+            }
+            paint.setColor(ICON);
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(dp(3));
+            PathHelper.drawNavigationArrow(canvas, paint, x, y, dp(16));
+            paint.setStyle(Paint.Style.FILL);
+        }
+
+        private void drawNavigationMapActionStack(Canvas canvas,
+                                                  @Nullable androidx.car.app.model.ActionStrip strip) {
+            if (strip == null || strip.getActions().isEmpty()) return;
+            List<Action> actions = strip.getActions();
+            int first = Math.max(0, actions.size() - 3);
+            float x = getWidth() - dp(53);
+            float top = panelTop();
+            float bottom = panelBottom();
+            float center = top + (bottom - top) * .64f;
+            int visibleIndex = 0;
+            for (int i = first; i < actions.size(); i++) {
+                Action action = actions.get(i);
+                float y = center + visibleIndex * dp(92);
+                paint.setStyle(Paint.Style.FILL);
+                paint.setColor(Color.BLACK);
+                canvas.drawCircle(x, y, dp(40), paint);
+                drawMapStackIcon(canvas, action, visibleIndex, x, y);
+                addHit(x - dp(40), y - dp(40), x + dp(40), y + dp(40),
+                        action.getOnClickDelegate());
+                visibleIndex++;
+            }
+        }
+
+        private void drawRoutingInfo(Canvas canvas, RoutingInfo info) {
+            float left = dp(18);
+            float top = contentTop() + dp(10);
+            float right = Math.min(getWidth() - dp(18), left + dp(420));
+            float mainHeight = dp(154);
+            float nextHeight = dp(58);
+            float bottom = top + mainHeight + nextHeight;
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(Color.rgb(164, 180, 192));
+            canvas.drawRoundRect(left, top, right, bottom, dp(14), dp(14), paint);
+            if (info.isLoading()) {
+                text(canvas, "Calculating route…", left + dp(18), top + dp(54), dp(22),
+                        Color.WHITE);
+                return;
+            }
+
+            paint.setColor(Color.rgb(104, 121, 134));
+            canvas.drawRect(left, top + mainHeight, right, bottom - dp(14), paint);
+            Step current = info.getCurrentStep();
+            if (current != null) {
+                Maneuver maneuver = current.getManeuver();
+                if (maneuver != null) {
+                    drawCarIcon(canvas, maneuver.getIcon(), left + dp(58), top + dp(70),
+                            dp(60));
+                }
+                text(canvas, formatDistance(info.getCurrentDistance()), left + dp(96),
+                        top + dp(72), dp(37), Color.WHITE);
+                String road = textOf(current.getRoad());
+                if (road.isEmpty()) road = textOf(current.getCue());
+                text(canvas, road, left + dp(16), top + dp(122), dp(24), Color.WHITE);
+            }
+
+            Step next = info.getNextStep();
+            if (next != null) {
+                Maneuver maneuver = next.getManeuver();
+                if (maneuver != null) {
+                    drawCarIcon(canvas, maneuver.getIcon(), left + dp(38),
+                            top + mainHeight + dp(29), dp(36));
+                }
+                String nextText = textOf(next.getCue());
+                if (nextText.isEmpty()) nextText = textOf(next.getRoad());
+                text(canvas, nextText, left + dp(70), top + mainHeight + dp(37),
+                        dp(22), Color.WHITE);
+            }
+        }
+
+        private void drawNavigationMessage(Canvas canvas, MessageInfo info) {
+            float left = dp(18);
+            float top = contentTop() + dp(10);
+            float right = Math.min(getWidth() - dp(18), left + dp(420));
+            float bottom = top + dp(126);
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(Color.rgb(164, 180, 192));
+            canvas.drawRoundRect(left, top, right, bottom, dp(14), dp(14), paint);
+            drawCarIcon(canvas, info.getImage(), left + dp(52), top + dp(52), dp(48));
+            text(canvas, textOf(info.getTitle()), left + dp(90), top + dp(54), dp(26),
+                    Color.WHITE);
+            text(canvas, textOf(info.getText()), left + dp(18), top + dp(98), dp(20),
+                    Color.WHITE);
+        }
+
+        private void drawNavigationTripEstimate(Canvas canvas, @Nullable TravelEstimate estimate) {
+            if (estimate == null) return;
+            String arrival = "";
+            if (estimate.getArrivalTimeAtDestination() != null) {
+                arrival = android.text.format.DateFormat.getTimeFormat(getContext()).format(
+                        new Date(estimate.getArrivalTimeAtDestination().getTimeSinceEpochMillis()));
+            }
+            String remainingTime = formatRemainingTime(estimate.getRemainingTimeSeconds());
+            String remainingDistance = formatDistance(estimate.getRemainingDistance());
+            String summary = remainingTime;
+            if (!remainingTime.isEmpty() && !remainingDistance.isEmpty()) {
+                summary += " · ";
+            }
+            summary += remainingDistance;
+            if (arrival.isEmpty() && summary.isEmpty()) return;
+
+            float left = dp(18);
+            float bottom = contentBottom() - dp(30);
+            float right = Math.min(getWidth() - dp(18), left + dp(420));
+            float top = bottom - dp(82);
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(Color.rgb(25, 30, 34));
+            canvas.drawRoundRect(left, top, right, bottom, dp(10), dp(10), paint);
+            text(canvas, arrival, left + dp(16), top + dp(31), dp(20), TEXT);
+            text(canvas, summary, left + dp(16), top + dp(61), dp(20), TEXT);
+        }
+
+        private void drawNavigationSpeed(Canvas canvas) {
+            float right = getWidth() - dp(18);
+            float left = right - dp(62);
+            float top = contentTop() + dp(18);
+            float bottom = top + dp(62);
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(Color.WHITE);
+            canvas.drawRoundRect(left, top, right, bottom, dp(8), dp(8), paint);
+            centerText(canvas, "0", (left + right) / 2, top + dp(33), dp(24),
+                    Color.DKGRAY, right - left - dp(8));
+            centerText(canvas, "MPH", (left + right) / 2, top + dp(51), dp(11),
+                    Color.GRAY, right - left - dp(8));
+        }
+
+        private boolean navigationControlsVisible() {
+            return SystemClock.uptimeMillis() < navigationControlsVisibleUntil;
+        }
+
+        private void showNavigationControls() {
+            Template template = wrapper == null ? null : wrapper.getTemplate();
+            if (!(template instanceof NavigationTemplate)) return;
+            navigationControlsVisibleUntil =
+                    SystemClock.uptimeMillis() + NAVIGATION_CONTROLS_TIMEOUT_MS;
+            removeCallbacks(hideNavigationControls);
+            postDelayed(hideNavigationControls, NAVIGATION_CONTROLS_TIMEOUT_MS);
+            invalidate();
+        }
+
+        private String formatDistance(@Nullable Distance distance) {
+            if (distance == null) return "";
+            double value = distance.getDisplayDistance();
+            switch (distance.getDisplayUnit()) {
+                case Distance.UNIT_FEET:
+                    return String.format(Locale.US, "%.0f ft", value);
+                case Distance.UNIT_YARDS:
+                    return String.format(Locale.US, "%.0f yd", value);
+                case Distance.UNIT_MILES:
+                case Distance.UNIT_MILES_P1:
+                    return String.format(Locale.US, "%.1f mi", value);
+                case Distance.UNIT_KILOMETERS:
+                case Distance.UNIT_KILOMETERS_P1:
+                    return String.format(Locale.US, "%.1f km", value);
+                case Distance.UNIT_METERS:
+                default:
+                    return String.format(Locale.US, "%.0f m", value);
+            }
+        }
+
+        private String formatRemainingTime(long seconds) {
+            if (seconds < 0) return "";
+            long minutes = Math.max(1, Math.round(seconds / 60.0));
+            if (minutes < 60) return minutes + " min";
+            long hours = minutes / 60;
+            long remainder = minutes % 60;
+            return remainder == 0 ? hours + " hr" : hours + " hr " + remainder + " min";
         }
 
         private void drawListTemplate(Canvas canvas, ListTemplate template) {
@@ -1240,6 +1534,12 @@ final class HostRootView extends FrameLayout {
         private void drawMapActionStrip(Canvas canvas,
                                         @Nullable androidx.car.app.model.ActionStrip strip,
                                         float centerY) {
+            drawMapActionStrip(canvas, strip, centerY, false);
+        }
+
+        private void drawMapActionStrip(Canvas canvas,
+                                        @Nullable androidx.car.app.model.ActionStrip strip,
+                                        float centerY, boolean forceSettingsIcon) {
             if (strip == null) return;
             List<Action> actions = strip.getActions();
             float centerX = getWidth() - dp(53);
@@ -1249,7 +1549,7 @@ final class HostRootView extends FrameLayout {
                 paint.setColor(PANEL);
                 paint.setStyle(Paint.Style.FILL);
                 canvas.drawCircle(x, centerY, dp(40), paint);
-                drawActionIcon(canvas, action, x, centerY, x < centerX);
+                drawActionIcon(canvas, action, x, centerY, forceSettingsIcon || x < centerX);
                 addHit(x - dp(40), centerY - dp(40), x + dp(40), centerY + dp(40),
                         action.getOnClickDelegate());
             }
@@ -1460,17 +1760,29 @@ final class HostRootView extends FrameLayout {
 
         private void drawContentPanel(Canvas canvas, Template content, boolean overlay) {
             int right = Math.min(getWidth() - 20, 600);
-            int top = 20;
-            int bottom = getHeight() - 24;
-            drawPanel(canvas, 20, top, right, bottom);
+            float left = 20;
+            float top = contentTop() + 20;
+            float bottom = contentBottom() - 24;
+            drawPanel(canvas, left, top, right, bottom);
             if (content instanceof ListTemplate) {
                 ListTemplate list = (ListTemplate) content;
-                title(canvas, list.getTitle(), 44, 60);
-                drawItems(canvas, list.getSingleList(), 44, 92, right - 28);
+                androidx.car.app.model.Header header = list.getHeader();
+                drawHeader(canvas,
+                        header == null ? list.getTitle() : header.getTitle(),
+                        header == null ? list.getHeaderAction() : header.getStartHeaderAction(),
+                        44, top + 12);
+                drawItems(canvas, list.getSingleList(), 44, (int) top + 84, right - 28);
+                if (list.isLoading()) {
+                    text(canvas, "Calculating route…", 44, top + 124, 18, MUTED);
+                }
             } else if (content instanceof PaneTemplate) {
                 PaneTemplate pane = (PaneTemplate) content;
-                title(canvas, pane.getTitle(), 44, 60);
-                drawPane(canvas, pane.getPane(), 44, 92, right - 28);
+                androidx.car.app.model.Header header = pane.getHeader();
+                drawHeader(canvas,
+                        header == null ? pane.getTitle() : header.getTitle(),
+                        header == null ? pane.getHeaderAction() : header.getStartHeaderAction(),
+                        44, top + 12);
+                drawPane(canvas, pane.getPane(), 44, (int) top + 84, right - 28);
             } else if (content instanceof PlaceListNavigationTemplate) {
                 PlaceListNavigationTemplate list = (PlaceListNavigationTemplate) content;
                 title(canvas, list.getTitle(), 44, 60);
@@ -1838,6 +2150,7 @@ final class HostRootView extends FrameLayout {
         public boolean onTouchEvent(MotionEvent event) {
             int action = event.getActionMasked();
             if (action == MotionEvent.ACTION_DOWN) {
+                if (mapMode) showNavigationControls();
                 downX = lastX = event.getX();
                 downY = lastY = event.getY();
                 dragging = false;
@@ -1863,6 +2176,7 @@ final class HostRootView extends FrameLayout {
             }
             scaleDetector.onTouchEvent(event);
             if (action == MotionEvent.ACTION_MOVE) {
+                if (mapMode) showNavigationControls();
                 float dx = event.getX() - lastX;
                 float dy = event.getY() - lastY;
                 if (Math.hypot(event.getX() - downX, event.getY() - downY) > dp(8)) {
