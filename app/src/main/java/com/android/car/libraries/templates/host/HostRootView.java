@@ -657,8 +657,45 @@ final class HostRootView extends FrameLayout {
         }
 
         private void drawMapWithContent(Canvas canvas, MapWithContentTemplate template) {
-            drawContentPanel(canvas, template.getContentTemplate(), true);
-            drawMapActionStrip(canvas, template.getActionStrip(), panelTop() + dp(42), true);
+            Template content = template.getContentTemplate();
+            if (content instanceof PaneTemplate) {
+                drawMapPaneContent(canvas, (PaneTemplate) content);
+            } else {
+                drawContentPanel(canvas, content, true);
+            }
+            // The normal action strip already supplies the correct icon for its
+            // action. Forcing every action to the settings glyph made route
+            // previews look like a row of identical gears.
+            drawMapActionStrip(canvas, template.getActionStrip(), panelTop() + dp(42), false);
+        }
+
+        private void drawMapPaneContent(Canvas canvas, PaneTemplate template) {
+            float left = dp(18);
+            float top = panelTop() + dp(6);
+            float right = Math.min(getWidth() - dp(24), left + dp(620));
+            Pane pane = template.getPane();
+            float bodyBottom = top + dp(84);
+            if (pane != null) {
+                for (Row row : pane.getRows()) {
+                    bodyBottom += routeRowHeight(row);
+                }
+                if (pane.getActions() != null && !pane.getActions().isEmpty()) {
+                    bodyBottom += dp(8) + dp(54);
+                }
+            }
+            float bottom = Math.min(panelBottom(),
+                    Math.max(bodyBottom + dp(18), top + dp(170)));
+            drawPanel(canvas, left, top, right, bottom);
+
+            androidx.car.app.model.Header header = template.getHeader();
+            drawHeader(canvas,
+                    header == null ? template.getTitle() : header.getTitle(),
+                    header == null ? template.getHeaderAction() : header.getStartHeaderAction(),
+                    left + dp(24), top + dp(6));
+            paint.setColor(DIVIDER);
+            canvas.drawRect(left + dp(18), top + dp(68), right - dp(18), top + dp(69), paint);
+            drawRoutePane(canvas, pane, left + dp(24), top + dp(84),
+                    right - left - dp(48));
         }
 
         private void drawPlaceListNavigation(Canvas canvas, PlaceListNavigationTemplate template) {
@@ -1876,6 +1913,78 @@ final class HostRootView extends FrameLayout {
                 y += h;
             }
             drawActionList(canvas, pane.getActions(), x, y + 8);
+        }
+
+        private float routeRowHeight(Row row) {
+            return dp(hasRouteSubtext(row) ? 90 : 72);
+        }
+
+        private boolean hasRouteSubtext(Row row) {
+            for (CarText subtext : row.getTexts()) {
+                String value = textOf(subtext).trim();
+                if (!value.isEmpty() && !"•".equals(value) && !"·".equals(value)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private void drawRoutePane(Canvas canvas, @Nullable Pane pane, float x, float y,
+                                   float width) {
+            if (pane == null) return;
+            float rowTop = y;
+            for (Row row : pane.getRows()) {
+                float rowHeight = routeRowHeight(row);
+                paint.setColor(ACCENT);
+                paint.setStyle(Paint.Style.FILL);
+                canvas.drawCircle(x + dp(8), rowTop + dp(30), dp(5), paint);
+                text(canvas, textOf(row.getTitle()), x + dp(26), rowTop + dp(36), dp(19),
+                        row.isEnabled() ? TEXT : MUTED);
+                if (hasRouteSubtext(row)) {
+                    float textY = rowTop + dp(62);
+                    for (CarText subtext : row.getTexts()) {
+                        String value = textOf(subtext).trim();
+                        if (value.isEmpty() || "•".equals(value) || "·".equals(value)) continue;
+                        text(canvas, value, x + dp(26), textY, dp(14), MUTED);
+                        textY += dp(18);
+                    }
+                }
+                paint.setColor(DIVIDER);
+                canvas.drawRect(x, rowTop + rowHeight - 1, x + width,
+                        rowTop + rowHeight, paint);
+                addHit(x, rowTop, x + width, rowTop + rowHeight, row.getOnClickDelegate());
+                rowTop += rowHeight;
+            }
+            drawRouteActionList(canvas, pane.getActions(), x, rowTop + dp(8), width);
+        }
+
+        private void drawRouteActionList(Canvas canvas, @Nullable List<Action> actions,
+                                         float x, float y, float width) {
+            if (actions == null) return;
+            float buttonWidth = Math.min(dp(190), width);
+            float offset = 0;
+            for (Action action : actions) {
+                if (offset + buttonWidth > width) break;
+                drawPrimaryAction(canvas, action, x + offset, y,
+                        x + offset + buttonWidth, y + dp(54));
+                offset += buttonWidth + dp(12);
+            }
+        }
+
+        private void drawPrimaryAction(Canvas canvas, @Nullable Action action, float left,
+                                       float top, float right, float bottom) {
+            if (action == null) return;
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(action.isEnabled() ? ACCENT : PANEL_ALT);
+            canvas.drawRoundRect(left, top, right, bottom, dp(14), dp(14), paint);
+            String label = textOf(action.getTitle());
+            if (label.isEmpty()) label = actionType(action);
+            int labelColor = action.isEnabled() ? Color.rgb(15, 31, 48) : MUTED;
+            centerText(canvas, label, (left + right) / 2f, top + dp(35), dp(17),
+                    labelColor, right - left - dp(24));
+            if (action.getOnClickDelegate() != null) {
+                addHit(left, top, right, bottom, action.getOnClickDelegate());
+            }
         }
 
         private void drawSearchField(Canvas canvas, String hint, float top) {
