@@ -74,9 +74,12 @@ import androidx.car.app.serialization.BundlerException;
 import androidx.car.app.media.model.MediaPlaybackTemplate;
 import androidx.car.app.navigation.model.MapWithContentTemplate;
 import androidx.car.app.navigation.model.MapTemplate;
+import androidx.car.app.navigation.model.MessageInfo;
 import androidx.car.app.navigation.model.NavigationTemplate;
 import androidx.car.app.navigation.model.PlaceListNavigationTemplate;
 import androidx.car.app.navigation.model.RoutePreviewNavigationTemplate;
+import androidx.car.app.navigation.model.RoutingInfo;
+import androidx.car.app.navigation.model.Step;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -692,17 +695,60 @@ final class HostRootView extends FrameLayout {
         }
 
         private void drawNavigationTemplate(Canvas canvas, NavigationTemplate template) {
+            drawNavigationInfo(canvas, template.getNavigationInfo());
+            drawMapActionStrip(canvas, template.getActionStrip(), panelTop() + dp(42));
+            drawMapActionStack(canvas, template.getMapActionStrip(), panelTop(), panelBottom());
+            drawToast(canvas);
+        }
+
+        private void drawNavigationInfo(Canvas canvas,
+                                        @Nullable NavigationTemplate.NavigationInfo info) {
+            if (info == null) return;
             float left = dp(12);
             float bottom = panelBottom();
             float top = Math.max(panelTop(), bottom - dp(168));
             float right = Math.min(getWidth() - dp(12), left + dp(520));
             drawPanel(canvas, left, top, right, bottom);
-            text(canvas, "Navigation", left + dp(32), top + dp(53), dp(27), TEXT);
-            text(canvas, "Map surface supplied to the app", left + dp(32),
-                    top + dp(88), dp(19), MUTED);
-            drawMapActionStrip(canvas, template.getActionStrip(), panelTop() + dp(42));
-            drawMapActionStack(canvas, template.getMapActionStrip(), panelTop(), bottom);
-            drawToast(canvas);
+
+            if (info instanceof RoutingInfo) {
+                RoutingInfo routing = (RoutingInfo) info;
+                if (routing.isLoading()) {
+                    text(canvas, "Calculating route…", left + dp(32), top + dp(53),
+                            dp(27), TEXT);
+                    return;
+                }
+                Step step = routing.getCurrentStep();
+                if (step == null) {
+                    text(canvas, "Navigation", left + dp(32), top + dp(53), dp(27), TEXT);
+                    return;
+                }
+                if (step.getManeuver() != null && step.getManeuver().getIcon() != null) {
+                    drawCarIcon(canvas, step.getManeuver().getIcon(),
+                            left + dp(46), top + dp(55), dp(44));
+                }
+                float textLeft = left + dp(82);
+                String cue = textOf(step.getCue());
+                if (cue.isEmpty()) cue = "Continue";
+                textBold(canvas, cue, textLeft, top + dp(51), dp(24), TEXT);
+                String road = textOf(step.getRoad());
+                String distance = routing.getCurrentDistance() == null
+                        ? "" : routing.getCurrentDistance().toString();
+                String detail = road;
+                if (!distance.isEmpty()) detail = detail.isEmpty() ? distance : distance + " · " + detail;
+                text(canvas, detail, textLeft, top + dp(86), dp(17), MUTED);
+                return;
+            }
+
+            if (info instanceof MessageInfo) {
+                MessageInfo message = (MessageInfo) info;
+                textBold(canvas, textOf(message.getTitle()), left + dp(32), top + dp(53),
+                        dp(25), TEXT);
+                text(canvas, textOf(message.getText()), left + dp(32), top + dp(88),
+                        dp(18), MUTED);
+                if (message.getImage() != null) {
+                    drawCarIcon(canvas, message.getImage(), right - dp(48), top + dp(54), dp(44));
+                }
+            }
         }
 
         private void drawListTemplate(Canvas canvas, ListTemplate template) {
@@ -1317,7 +1363,7 @@ final class HostRootView extends FrameLayout {
                 paint.setColor(PANEL);
                 paint.setStyle(Paint.Style.FILL);
                 canvas.drawCircle(x, centerY, dp(40), paint);
-                drawActionIcon(canvas, action, x, centerY, x < centerX);
+                drawActionIcon(canvas, action, x, centerY);
                 addHit(x - dp(40), centerY - dp(40), x + dp(40), centerY + dp(40),
                         action.getOnClickDelegate());
             }
@@ -1327,7 +1373,15 @@ final class HostRootView extends FrameLayout {
                                         @Nullable androidx.car.app.model.ActionStrip strip,
                                         float top, float bottom) {
             if (strip == null) return;
-            List<Action> actions = strip.getActions();
+            // TYPE_PAN is a host-level mode toggle in the stock renderer. The
+            // app's pan action has no click delegate, so drawing it as an
+            // ordinary map button would both consume a slot and make it look
+            // interactive without changing pan mode. Touch drags already
+            // enter the same map interaction path in this host.
+            List<Action> actions = new ArrayList<>();
+            for (Action action : strip.getActions()) {
+                if (action.getType() != Action.TYPE_PAN) actions.add(action);
+            }
             float x = getWidth() - dp(53);
             float center = top + (bottom - top) * .64f;
             for (int i = 0; i < actions.size(); i++) {
@@ -1343,6 +1397,10 @@ final class HostRootView extends FrameLayout {
         }
 
         private void drawMapStackIcon(Canvas canvas, Action action, int index, float x, float y) {
+            if (action.getIcon() != null && drawCarIconIfAvailable(
+                    canvas, action.getIcon(), x, y, dp(44), true)) {
+                return;
+            }
             paint.setColor(ICON);
             paint.setStyle(Paint.Style.STROKE);
             paint.setStrokeWidth(dp(3));
@@ -1390,13 +1448,19 @@ final class HostRootView extends FrameLayout {
             paint.setStyle(Paint.Style.FILL);
         }
 
-        private void drawActionIcon(Canvas canvas, Action action, float x, float y,
-                                    boolean settings) {
+        private void drawActionIcon(Canvas canvas, Action action, float x, float y) {
+            if (action.getIcon() != null && drawCarIconIfAvailable(
+                    canvas, action.getIcon(), x, y, dp(44), true)) {
+                return;
+            }
             String label = textOf(action.getTitle()).toLowerCase();
             paint.setColor(ICON);
             paint.setStyle(Paint.Style.STROKE);
             paint.setStrokeWidth(dp(3));
-            if (settings || label.contains("setting")) {
+            if (action.getType() == Action.TYPE_PAN) {
+                canvas.drawLine(x - dp(16), y, x + dp(16), y, paint);
+                canvas.drawLine(x, y - dp(16), x, y + dp(16), paint);
+            } else if (label.contains("setting")) {
                 canvas.drawCircle(x, y, dp(11), paint);
                 for (int i = 0; i < 8; i++) {
                     double angle = i * Math.PI / 4;
@@ -1789,21 +1853,36 @@ final class HostRootView extends FrameLayout {
 
         private void drawCarIcon(Canvas canvas, androidx.car.app.model.CarIcon carIcon,
                                  float centerX, float centerY, float size) {
-            if (carIcon == null) return;
+            if (drawCarIconIfAvailable(canvas, carIcon, centerX, centerY, size)) return;
+            drawAndroidAppIcon(canvas, centerX, centerY, size);
+        }
+
+        private boolean drawCarIconIfAvailable(Canvas canvas,
+                                               androidx.car.app.model.CarIcon carIcon,
+                                               float centerX, float centerY, float size) {
+            return drawCarIconIfAvailable(canvas, carIcon, centerX, centerY, size, false);
+        }
+
+        private boolean drawCarIconIfAvailable(Canvas canvas,
+                                               androidx.car.app.model.CarIcon carIcon,
+                                               float centerX, float centerY, float size,
+                                               boolean tint) {
+            if (carIcon == null || carIcon.getIcon() == null) return false;
             try {
                 Drawable drawable = carIcon.getIcon().loadDrawable(getContext());
                 if (drawable != null) {
+                    if (tint) drawable.setTint(ICON);
                     int half = Math.round(size / 2);
                     drawable.setBounds(Math.round(centerX - half), Math.round(centerY - half),
                             Math.round(centerX + half), Math.round(centerY + half));
                     drawable.draw(canvas);
-                    return;
+                    return true;
                 }
             } catch (RuntimeException ignored) {
-                // Some app icons are remote-only; use the same familiar app
-                // glyph as the stock host instead of an empty placeholder.
+                // Some app icons are remote-only; callers decide which fallback
+                // glyph is appropriate for that icon's role.
             }
-            drawAndroidAppIcon(canvas, centerX, centerY, size);
+            return false;
         }
 
         private void drawAndroidAppIcon(Canvas canvas, float centerX, float centerY, float size) {
