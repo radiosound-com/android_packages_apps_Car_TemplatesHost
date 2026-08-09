@@ -24,6 +24,8 @@ import androidx.car.app.Session;
 import androidx.car.app.validation.HostValidator;
 import androidx.car.app.model.Action;
 import androidx.car.app.model.CarIcon;
+import androidx.car.app.model.DateTimeWithZone;
+import androidx.car.app.model.Distance;
 import androidx.car.app.model.GridItem;
 import androidx.car.app.model.GridTemplate;
 import androidx.car.app.model.Header;
@@ -47,6 +49,13 @@ import androidx.car.app.model.signin.ProviderSignInMethod;
 import androidx.car.app.model.signin.SignInTemplate;
 import androidx.car.app.media.model.MediaPlaybackTemplate;
 import androidx.car.app.navigation.model.RoutePreviewNavigationTemplate;
+import androidx.car.app.navigation.model.Maneuver;
+import androidx.car.app.navigation.model.NavigationTemplate;
+import androidx.car.app.navigation.model.RoutingInfo;
+import androidx.car.app.navigation.model.Step;
+import androidx.car.app.navigation.model.TravelEstimate;
+
+import java.util.TimeZone;
 
 /**
  * Small deterministic app used to exercise every AndroidX Car App 1.7 model
@@ -110,6 +119,7 @@ public final class ConformanceCarAppService extends CarAppService {
                 case "sections": return sections();
                 case "place-map": return placeMap();
                 case "route-preview": return routePreview();
+                case "navigation": return navigation();
                 case "media": return media();
                 case "list": return list();
                 case "pane": return pane();
@@ -272,6 +282,29 @@ public final class ConformanceCarAppService extends CarAppService {
         private RoutePreviewNavigationTemplate routePreview() {
             return new RoutePreviewNavigationTemplate.Builder().setTitle("Route preview")
                     .setLoading(true).build();
+        }
+
+        private NavigationTemplate navigation() {
+            Step step = new Step.Builder()
+                    .setCue("Turn right onto Bluegrass Parkway")
+                    .setRoad("Bluegrass Parkway")
+                    .setManeuver(new Maneuver.Builder(Maneuver.TYPE_TURN_NORMAL_RIGHT).build())
+                    .build();
+            RoutingInfo routingInfo = new RoutingInfo.Builder()
+                    .setCurrentStep(step, Distance.create(.3, Distance.UNIT_MILES))
+                    .build();
+            TravelEstimate estimate = new TravelEstimate.Builder(
+                    Distance.create(1.9, Distance.UNIT_MILES),
+                    DateTimeWithZone.create(System.currentTimeMillis() + 6 * 60 * 1000,
+                            TimeZone.getDefault()))
+                    .setRemainingTimeSeconds(6 * 60)
+                    .build();
+            return new NavigationTemplate.Builder()
+                    .setNavigationInfo(routingInfo)
+                    .setDestinationTravelEstimate(estimate)
+                    .setActionStrip(new androidx.car.app.model.ActionStrip.Builder()
+                            .addAction(action("Stop")).build())
+                    .build();
         }
 
         private MediaPlaybackTemplate media() {

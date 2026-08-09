@@ -9,7 +9,16 @@ PACKAGE=${PACKAGE:-com.android.car.libraries.templates.conformance}
 COMPONENT="$PACKAGE/androidx.car.app.activity.CarAppActivity"
 HOST=${HOST:-com.android.car.libraries.templates.host}
 
-for mode in grid long-message sign-in tabs sections place-map route-preview media list pane message search; do
+# Map templates request location through the Car App Library. Grant the
+# conformance app's declared runtime permissions on test users when the image
+# permits shell grants; hosts that do not expose runtime location simply keep
+# the map fixture in its loading state.
+"$ADB" shell pm grant --user 10 "$PACKAGE" android.permission.ACCESS_FINE_LOCATION \
+    2>/dev/null || true
+"$ADB" shell pm grant --user 10 "$PACKAGE" android.permission.ACCESS_COARSE_LOCATION \
+    2>/dev/null || true
+
+for mode in grid long-message sign-in tabs sections place-map route-preview navigation media list pane message search; do
     "$ADB" shell am force-stop "$PACKAGE"
     # Restarting the renderer makes every mode a fresh handshake/surface test.
     "$ADB" shell am force-stop "$HOST" 2>/dev/null || true
@@ -23,8 +32,8 @@ for mode in grid long-message sign-in tabs sections place-map route-preview medi
         exit 1
     fi
     template=$(
-        "$ADB" logcat -d -v brief | rg 'received template' | tail -1 \
-            | sed 's/.*received template //' || true
+        "$ADB" logcat -d -v brief | rg 'received template|Host received new template' | tail -1 \
+            | sed 's/.*received //' || true
     )
     if [ -z "$template" ]; then
         echo "FAIL: conformance mode $mode did not reach the renderer" >&2

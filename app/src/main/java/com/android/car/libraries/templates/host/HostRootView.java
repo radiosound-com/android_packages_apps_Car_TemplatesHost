@@ -32,6 +32,7 @@ import android.os.Handler;
 import android.os.HandlerThread;
 import android.graphics.PixelFormat;
 import android.text.InputType;
+import android.text.format.DateFormat;
 import android.view.MotionEvent;
 import android.view.KeyEvent;
 import android.view.Surface;
@@ -47,6 +48,8 @@ import androidx.annotation.Nullable;
 import androidx.car.app.model.Action;
 import androidx.car.app.model.Alert;
 import androidx.car.app.model.CarText;
+import androidx.car.app.model.DateTimeWithZone;
+import androidx.car.app.model.Distance;
 import androidx.car.app.model.GridItem;
 import androidx.car.app.model.GridTemplate;
 import androidx.car.app.model.Item;
@@ -80,6 +83,7 @@ import androidx.car.app.navigation.model.PlaceListNavigationTemplate;
 import androidx.car.app.navigation.model.RoutePreviewNavigationTemplate;
 import androidx.car.app.navigation.model.RoutingInfo;
 import androidx.car.app.navigation.model.Step;
+import androidx.car.app.navigation.model.TravelEstimate;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -87,6 +91,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Locale;
 import java.util.Set;
 
 /** Surface content used by the open templates host. */
@@ -99,6 +104,8 @@ final class HostRootView extends FrameLayout {
                  @Nullable Drawable appIcon) {
         super(context);
         this.densityDpi = densityDpi;
+        setFocusable(true);
+        setFocusableInTouchMode(true);
         setBackgroundColor(Color.TRANSPARENT);
         mapSurface = new MapSurfaceView(context, session);
         templateView = new TemplateCanvasView(context, session, densityDpi, appIcon);
@@ -151,6 +158,11 @@ final class HostRootView extends FrameLayout {
     @Override public boolean dispatchKeyEvent(KeyEvent event) {
         if (templateView.handleRotaryKey(event)) return true;
         return super.dispatchKeyEvent(event);
+    }
+
+    @Override public boolean dispatchGenericMotionEvent(MotionEvent event) {
+        if (templateView.onGenericMotionEvent(event)) return true;
+        return super.dispatchGenericMotionEvent(event);
     }
 
     static final class MapSurfaceView extends View {
@@ -319,6 +331,8 @@ final class HostRootView extends FrameLayout {
         private float listMaxScroll;
         private boolean redrawPosted;
         private Hit rotaryTarget;
+        private int rotaryFocusIndex;
+        private boolean rotaryFocusActive;
         private final Runnable stopInput;
         private final Runnable stopLocalInput;
             private final InputConnection localInputConnection = new BaseInputConnection(this, true) {
@@ -404,6 +418,8 @@ final class HostRootView extends FrameLayout {
         void render(TemplateWrapper wrapper) {
             if (this.wrapper != wrapper) {
                 listScrollOffset = 0;
+                rotaryFocusIndex = 0;
+                rotaryFocusActive = false;
                 if (wrapper != null && wrapper.getTemplate() instanceof SearchTemplate) {
                     searchText = ((SearchTemplate) wrapper.getTemplate()).getInitialSearchText();
                     if (searchText == null) searchText = "";
@@ -413,6 +429,9 @@ final class HostRootView extends FrameLayout {
             requestRedraw();
             boolean searchTemplate = wrapper != null
                     && wrapper.getTemplate() instanceof SearchTemplate;
+            if (!searchTemplate) {
+                session.stopSearchDictation();
+            }
             setFocusable(true);
             setFocusableInTouchMode(true);
             if (!searchTemplate) {
@@ -533,7 +552,7 @@ final class HostRootView extends FrameLayout {
             }
         }
 
-        private void stopLocalInput() {
+        void stopLocalInput() {
             InputMethodManager manager = (InputMethodManager) getContext()
                     .getSystemService(Context.INPUT_METHOD_SERVICE);
             if (manager != null && getWindowToken() != null) {
@@ -696,6 +715,7 @@ final class HostRootView extends FrameLayout {
 
         private void drawNavigationTemplate(Canvas canvas, NavigationTemplate template) {
             drawNavigationInfo(canvas, template.getNavigationInfo());
+            drawDestinationTravelEstimate(canvas, template.getDestinationTravelEstimate());
             drawMapActionStrip(canvas, template.getActionStrip(), panelTop() + dp(42));
             drawMapActionStack(canvas, template.getMapActionStrip(), panelTop(), panelBottom());
             drawToast(canvas);
@@ -705,8 +725,8 @@ final class HostRootView extends FrameLayout {
                                         @Nullable NavigationTemplate.NavigationInfo info) {
             if (info == null) return;
             float left = dp(12);
-            float bottom = panelBottom();
-            float top = Math.max(panelTop(), bottom - dp(168));
+            float top = panelTop();
+            float bottom = top + dp(124);
             float right = Math.min(getWidth() - dp(12), left + dp(520));
             drawPanel(canvas, left, top, right, bottom);
 
@@ -749,6 +769,93 @@ final class HostRootView extends FrameLayout {
                     drawCarIcon(canvas, message.getImage(), right - dp(48), top + dp(54), dp(44));
                 }
             }
+        }
+
+        /** Draws the separate destination card used by the navigation HUD. */
+        private void drawDestinationTravelEstimate(Canvas canvas,
+                                                   @Nullable TravelEstimate estimate) {
+            if (estimate == null) return;
+
+            float left = dp(12);
+            float bottom = panelBottom();
+            float top = bottom - dp(116);
+            float right = Math.min(getWidth() - dp(12), left + dp(440));
+            drawPanel(canvas, left, top, right, bottom);
+
+            String distance = formatDistance(estimate.getRemainingDistance());
+            String remainingTime = formatRemainingTime(estimate.getRemainingTimeSeconds());
+            String primary = joinWithBullet(distance, remainingTime);
+            if (primary.isEmpty()) {
+                primary = textOf(estimate.getTripText());
+            }
+            if (primary.isEmpty()) {
+                primary = "Destination";
+            }
+            textBold(canvas, primary, left + dp(30), top + dp(47), dp(25), TEXT);
+
+            String arrival = formatArrivalTime(estimate.getArrivalTimeAtDestination());
+            if (!arrival.isEmpty()) {
+                text(canvas, "ETA " + arrival, left + dp(30), top + dp(82), dp(18), MUTED);
+            }
+        }
+
+        private String formatRemainingTime(long seconds) {
+            if (seconds == TravelEstimate.REMAINING_TIME_UNKNOWN || seconds < 0) {
+                return "";
+            }
+            long minutes = (seconds + 59) / 60;
+            if (minutes == 0) minutes = 1;
+            long hours = minutes / 60;
+            long remainder = minutes % 60;
+            if (hours > 0 && remainder > 0) {
+                return hours + " hr " + remainder + " min";
+            }
+            if (hours > 0) {
+                return hours + (hours == 1 ? " hr" : " hrs");
+            }
+            return minutes + " min";
+        }
+
+        private String formatDistance(@Nullable Distance distance) {
+            if (distance == null) return "";
+            double value = distance.getDisplayDistance();
+            if (!Double.isFinite(value)) return distance.toString();
+            double rounded = Math.round(value * 10.0) / 10.0;
+            String unit;
+            switch (distance.getDisplayUnit()) {
+                case Distance.UNIT_KILOMETERS:
+                case Distance.UNIT_KILOMETERS_P1:
+                    unit = "km";
+                    break;
+                case Distance.UNIT_MILES:
+                case Distance.UNIT_MILES_P1:
+                    unit = "mi";
+                    break;
+                case Distance.UNIT_FEET:
+                    unit = "ft";
+                    break;
+                case Distance.UNIT_YARDS:
+                    unit = "yd";
+                    break;
+                case Distance.UNIT_METERS:
+                    unit = "m";
+                    break;
+                default:
+                    return String.format(Locale.US, "%.1f", rounded);
+            }
+            return String.format(Locale.US, "%.1f%s", rounded, unit);
+        }
+
+        private String formatArrivalTime(@Nullable DateTimeWithZone arrival) {
+            if (arrival == null || arrival.getTimeSinceEpochMillis() <= 0) return "";
+            return DateFormat.getTimeFormat(getContext()).format(
+                    new java.util.Date(arrival.getTimeSinceEpochMillis()));
+        }
+
+        private String joinWithBullet(String first, String second) {
+            if (first == null || first.isEmpty()) return second == null ? "" : second;
+            if (second == null || second.isEmpty()) return first;
+            return first + "  ·  " + second;
         }
 
         private void drawListTemplate(Canvas canvas, ListTemplate template) {
@@ -797,12 +904,12 @@ final class HostRootView extends FrameLayout {
 
         private float drawSettingsRows(Canvas canvas, @Nullable ItemList list, float y) {
             if (list == null) return y;
-            boolean first = true;
             int rowCount = 0;
             for (Item item : list.getItems()) {
                 if (item instanceof Row) rowCount++;
             }
             int rowIndex = 0;
+            int focusIndex = 0;
             for (Item item : list.getItems()) {
                 if (!(item instanceof Row)) continue;
                 Row row = (Row) item;
@@ -814,19 +921,16 @@ final class HostRootView extends FrameLayout {
                 }
                 float rowHeight = !hasText ? dp(62)
                         : dp(textLength > 90 ? 122 : 96);
-                // Toggle rows are rendered as controls rather than rotary-focus
-                // selections. The stock host does not outline the first switch
-                // when the list is initially shown; ordinary clickable rows in
-                // the conformance list retain the stock initial focus outline.
                 boolean visible = rowTop + rowHeight > scrollContentTop()
                         && rowTop < contentBottom();
                 boolean canFocusRow = row.getOnClickDelegate() != null
-                        && row.getToggle() == null;
-                if ((first && row.getToggle() == null)
-                        || (rotaryTarget == null && visible && canFocusRow)) {
+                        || (row.getToggle() != null
+                        && row.getToggle().getOnCheckedChangeDelegate() != null);
+                boolean selected = rotaryFocusActive && canFocusRow
+                        && focusIndex == rotaryFocusIndex;
+                if (selected) {
                     drawSelectionPanel(canvas, 54, rowTop, getWidth() - 54, rowTop + rowHeight);
                 }
-                first = false;
                 text(canvas, textOf(row.getTitle()), dp(88), rowTop + dp(40), 20,
                         row.isEnabled() ? TEXT : MUTED);
                     float textY = rowTop + dp(69);
@@ -869,9 +973,10 @@ final class HostRootView extends FrameLayout {
                             row.getToggle().getOnCheckedChangeDelegate(),
                             rowToggleChecked, textOf(row.getTitle()));
                 }
-                if (rotaryTarget == null && visible && rotaryRow != null) {
+                if (focusIndex == rotaryFocusIndex && visible && rotaryRow != null) {
                     rotaryTarget = rotaryRow;
                 }
+                if (canFocusRow) focusIndex++;
                 if (rowIndex + 1 < rowCount) {
                     paint.setColor(DIVIDER);
                     canvas.drawRect(dp(88), rowTop + rowHeight - 1,
@@ -923,7 +1028,11 @@ final class HostRootView extends FrameLayout {
 
         private void drawSearchTemplate(Canvas canvas, SearchTemplate template) {
             float top = contentTop() + 10;
-            drawSearchField(canvas, template.getSearchHint(), top);
+            Action headerAction = template.getHeaderAction();
+            boolean hasBackHeader = headerAction != null
+                    && headerAction.getType() == Action.TYPE_BACK;
+            drawSearchField(canvas, template.getSearchHint(), top,
+                    searchFieldLeft(hasBackHeader));
             float listTop = top + 50;
             float listBottom = contentBottom();
             canvas.save();
@@ -934,8 +1043,16 @@ final class HostRootView extends FrameLayout {
             listMaxScroll = Math.max(0, contentEnd - listBottom);
             drawScrollChevron(canvas, dp(42), listTop + dp(40), true);
             drawScrollChevron(canvas, dp(42), listBottom - dp(40), false);
-            drawAction(canvas, template.getHeaderAction(), 24, contentTop() + 10, 174,
-                    contentTop() + 62);
+            if (hasBackHeader) {
+                // SearchTemplate's BACK action is a leading header control,
+                // not a regular action button. Keep it in its own slot so it
+                // cannot paint over or steal input from the search field.
+                drawBackArrow(canvas, 24 + dp(8), top + dp(27));
+                addBackHit(top);
+            } else {
+                drawAction(canvas, headerAction, 24, contentTop() + 10, 174,
+                        contentTop() + 62);
+            }
             drawActionStrip(canvas, template.getActionStrip());
         }
 
@@ -962,10 +1079,8 @@ final class HostRootView extends FrameLayout {
                     if (!(item instanceof GridItem)) continue;
                     GridItem gridItem = (GridItem) item;
                     float cellLeft = x + column * cellWidth;
-                    int firstVisibleItem = Math.max(0,
-                            ((int) (listScrollOffset / 168)) * columns);
-                    drawGridItem(canvas, gridItem, cellLeft, y, cellWidth - 12,
-                            itemIndex == firstVisibleItem);
+                    drawGridItem(canvas, gridItem, cellLeft, y, cellWidth - 12, itemIndex,
+                            rotaryFocusActive && itemIndex == rotaryFocusIndex);
                     itemIndex++;
                     column++;
                     if (column == columns) {
@@ -986,7 +1101,7 @@ final class HostRootView extends FrameLayout {
         }
 
         private void drawGridItem(Canvas canvas, GridItem item, float left, float top,
-                                  float width, boolean selected) {
+                                  float width, int itemIndex, boolean selected) {
             float height = 166;
             if (selected) drawSelectionPanel(canvas, left, top, left + width, top + height);
             float imageSize = 92;
@@ -1007,7 +1122,10 @@ final class HostRootView extends FrameLayout {
                 centerText(canvas, subtitle, imageX, top + 150, 14, MUTED, width - 16);
             }
             Hit hit = addHit(left, top, left + width, top + height, item.getOnClickDelegate());
-            if (selected && hit != null) rotaryTarget = hit;
+            if (hit != null && item.getOnClickDelegate() != null
+                    && itemIndex == rotaryFocusIndex) {
+                rotaryTarget = hit;
+            }
         }
 
         private void drawLongMessageTemplate(Canvas canvas, LongMessageTemplate template) {
@@ -1163,7 +1281,9 @@ final class HostRootView extends FrameLayout {
             float left = 54;
             float right = getWidth() - 54;
             float height = row.getTexts().isEmpty() ? 62 : 72;
-            drawSelectionPanel(canvas, left, top, right, top + height);
+            if (rotaryFocusActive) {
+                drawSelectionPanel(canvas, left, top, right, top + height);
+            }
             text(canvas, textOf(row.getTitle()), 66, top + 32, 20,
                     row.isEnabled() ? TEXT : MUTED);
             float textY = top + 58;
@@ -1171,7 +1291,8 @@ final class HostRootView extends FrameLayout {
                 text(canvas, textOf(subtext), 66, textY, 16, MUTED);
                 textY += 20;
             }
-            addHit(left, top, right, top + height, row.getOnClickDelegate());
+            Hit hit = addHit(left, top, right, top + height, row.getOnClickDelegate());
+            if (hit != null && rotaryTarget == null) rotaryTarget = hit;
             return top + height;
         }
 
@@ -1550,6 +1671,99 @@ final class HostRootView extends FrameLayout {
             return contentTop() + dp(78);
         }
 
+        private int focusableItemCount() {
+            Template template = wrapper == null ? null : wrapper.getTemplate();
+            if (template instanceof GridTemplate) {
+                ItemList list = ((GridTemplate) template).getSingleList();
+                if (list == null) return 0;
+                int count = 0;
+                for (Item item : list.getItems()) {
+                    if (item instanceof GridItem
+                            && ((GridItem) item).getOnClickDelegate() != null) {
+                        count++;
+                    }
+                }
+                return count;
+            }
+            if (template instanceof SearchTemplate) {
+                return countFocusableRows(((SearchTemplate) template).getItemList());
+            }
+            if (template instanceof ListTemplate) {
+                ListTemplate list = (ListTemplate) template;
+                return list.getSingleList() == null
+                        ? 0 : countFocusableRows(list.getSingleList());
+            }
+            return 0;
+        }
+
+        private int countFocusableRows(@Nullable ItemList list) {
+            if (list == null) return 0;
+            int count = 0;
+            for (Item item : list.getItems()) {
+                if (!(item instanceof Row)) continue;
+                Row row = (Row) item;
+                if (row.getOnClickDelegate() != null
+                        || (row.getToggle() != null
+                        && row.getToggle().getOnCheckedChangeDelegate() != null)) {
+                    count++;
+                }
+            }
+            return count;
+        }
+
+        private int gridColumns() {
+            Template template = wrapper == null ? null : wrapper.getTemplate();
+            if (!(template instanceof GridTemplate)) return 1;
+            return ((GridTemplate) template).getItemSize() == GridTemplate.ITEM_SIZE_SMALL ? 6 : 5;
+        }
+
+        private void ensureGridFocusVisible() {
+            Template template = wrapper == null ? null : wrapper.getTemplate();
+            if (!(template instanceof GridTemplate)) return;
+            ItemList list = ((GridTemplate) template).getSingleList();
+            if (list == null) return;
+            int row = rotaryFocusIndex / gridColumns();
+            float listTop = contentTop() + 60;
+            float viewportBottom = contentBottom() - dp(45);
+            float itemTop = listTop + row * 168;
+            float itemBottom = itemTop + 166;
+            if (itemTop - listScrollOffset < listTop) {
+                listScrollOffset = itemTop - listTop;
+            } else if (itemBottom - listScrollOffset > viewportBottom) {
+                listScrollOffset = itemBottom - viewportBottom;
+            }
+            listScrollOffset = Math.max(0, Math.min(listMaxScroll, listScrollOffset));
+        }
+
+        private void ensureLinearFocusVisible() {
+            Template template = wrapper == null ? null : wrapper.getTemplate();
+            if (!(template instanceof ListTemplate || template instanceof SearchTemplate)) return;
+            float top = template instanceof SearchTemplate
+                    ? contentTop() + 60 : contentTop() + dp(80);
+            float rowTop = top + rotaryFocusIndex * dp(96) - listScrollOffset;
+            float rowBottom = rowTop + dp(96);
+            if (rowTop < top) {
+                listScrollOffset -= top - rowTop;
+            } else if (rowBottom > contentBottom()) {
+                listScrollOffset += rowBottom - contentBottom();
+            }
+            listScrollOffset = Math.max(0, Math.min(listMaxScroll, listScrollOffset));
+        }
+
+        private void moveRotaryFocus(int itemDelta) {
+            int count = focusableItemCount();
+            if (count == 0) return;
+            rotaryFocusIndex = Math.max(0, Math.min(count - 1,
+                    rotaryFocusIndex + itemDelta));
+            rotaryFocusActive = true;
+            if (wrapper != null && wrapper.getTemplate() instanceof GridTemplate) {
+                ensureGridFocusVisible();
+            } else {
+                ensureLinearFocusVisible();
+            }
+            requestRedraw();
+        }
+
         private void scrollListBy(float distance) {
             listScrollOffset = Math.max(0, Math.min(listMaxScroll,
                     listScrollOffset - distance));
@@ -1577,7 +1791,9 @@ final class HostRootView extends FrameLayout {
                                @Nullable androidx.car.app.model.TabCallbackDelegate delegate,
                                String contentId) {
             if (delegate != null && contentId != null) {
-                hits.add(new Hit(new RectF(left, top, right, bottom), delegate, contentId));
+                Hit hit = new Hit(new RectF(left, top, right, bottom), delegate, contentId);
+                hits.add(hit);
+                if (rotaryTarget == null) rotaryTarget = hit;
             }
         }
 
@@ -1632,7 +1848,9 @@ final class HostRootView extends FrameLayout {
                 Row row = (Row) item;
                 int h = row.getTexts().isEmpty() ? 62 : 72;
                 if (first) {
-                    drawSelectionPanel(canvas, x - 12, y, x + width + 12, y + h);
+                    if (rotaryFocusActive) {
+                        drawSelectionPanel(canvas, x - 12, y, x + width + 12, y + h);
+                    }
                     first = false;
                 }
                 text(canvas, textOf(row.getTitle()), x + 20, y + 30, 19,
@@ -1644,7 +1862,8 @@ final class HostRootView extends FrameLayout {
                 }
                 paint.setColor(DIVIDER);
                 canvas.drawRect(x, y + h - 1, x + width, y + h, paint);
-                addHit(x, y, x + width, y + h, row.getOnClickDelegate());
+                Hit hit = addHit(x, y, x + width, y + h, row.getOnClickDelegate());
+                if (hit != null && rotaryTarget == null) rotaryTarget = hit;
                 y += h;
             }
             return y;
@@ -1654,10 +1873,17 @@ final class HostRootView extends FrameLayout {
                                       float width, float scrollOffset) {
             if (list == null) return y;
             float rowTop = y - scrollOffset;
+            int focusIndex = 0;
             for (Item item : list.getItems()) {
                 if (!(item instanceof Row)) continue;
                 Row row = (Row) item;
                 float rowHeight = row.getTexts().isEmpty() ? dp(62) : dp(96);
+                boolean canFocus = row.getOnClickDelegate() != null;
+                boolean selected = rotaryFocusActive && canFocus
+                        && focusIndex == rotaryFocusIndex;
+                if (selected) {
+                    drawSelectionPanel(canvas, x, rowTop, x + width, rowTop + rowHeight);
+                }
                 text(canvas, textOf(row.getTitle()), x + dp(20), rowTop + dp(40), 20,
                         row.isEnabled() ? TEXT : MUTED);
                 float textY = rowTop + dp(69);
@@ -1670,10 +1896,11 @@ final class HostRootView extends FrameLayout {
                         x + width, rowTop + rowHeight, paint);
                 Hit hit = addHit(x, rowTop, x + width, rowTop + rowHeight,
                         row.getOnClickDelegate());
-                if (rotaryTarget == null && hit != null
+                if (focusIndex == rotaryFocusIndex && hit != null
                         && rowTop + rowHeight > y && rowTop < contentBottom()) {
                     rotaryTarget = hit;
                 }
+                if (canFocus) focusIndex++;
                 rowTop += rowHeight;
             }
             return rowTop + scrollOffset;
@@ -1702,9 +1929,26 @@ final class HostRootView extends FrameLayout {
             drawActionList(canvas, pane.getActions(), x, y + 8);
         }
 
-        private void drawSearchField(Canvas canvas, String hint, float top) {
-            float left = 24;
-            float right = getWidth() - 24;
+        private float searchFieldLeft(boolean hasBackHeader) {
+            // Match the leading slot used by drawHeader(): the back arrow
+            // occupies the first 56dp from the header origin.
+            return hasBackHeader ? 24 + dp(56) : 24;
+        }
+
+        private float searchFieldLeft() {
+            Template template = wrapper == null ? null : wrapper.getTemplate();
+            return searchFieldLeft(template instanceof SearchTemplate
+                    && ((SearchTemplate) template).getHeaderAction() != null
+                    && ((SearchTemplate) template).getHeaderAction().getType()
+                    == Action.TYPE_BACK);
+        }
+
+        private float searchFieldRight() {
+            return getWidth() - 24;
+        }
+
+        private void drawSearchField(Canvas canvas, String hint, float top, float left) {
+            float right = searchFieldRight();
             paint.setColor(PANEL_ALT);
             paint.setStyle(Paint.Style.FILL);
             canvas.drawRoundRect(left, top, right, top + 44, 24, 24, paint);
@@ -1752,7 +1996,9 @@ final class HostRootView extends FrameLayout {
             centerText(canvas, textOf(action.getTitle()), getWidth() / 2f, top + 33, 16,
                     TEXT, width - 12);
             if (action.getOnClickDelegate() != null) {
-                addHit(left, top, left + width, top + 52, action.getOnClickDelegate());
+                Hit hit = addHit(left, top, left + width, top + 52,
+                        action.getOnClickDelegate());
+                if (rotaryTarget == null) rotaryTarget = hit;
             }
         }
 
@@ -1791,7 +2037,8 @@ final class HostRootView extends FrameLayout {
             centerText(canvas, label, (left + right) / 2f, top + 34, 16,
                     action.isEnabled() ? TEXT : MUTED, right - left - 20);
             if (action.getOnClickDelegate() != null) {
-                addHit(left, top, right, bottom, action.getOnClickDelegate());
+                Hit hit = addHit(left, top, right, bottom, action.getOnClickDelegate());
+                if (rotaryTarget == null) rotaryTarget = hit;
             }
         }
 
@@ -2063,10 +2310,14 @@ final class HostRootView extends FrameLayout {
                     }
                 } else if (!dragging && action == MotionEvent.ACTION_UP) {
                     Hit hit = pressedHit;
-                    if (isSearchFieldAt(event.getX(), event.getY())) {
-                        startLocalInput();
-                    } else if (backPressed) {
+                    if (backPressed) {
                         session.onBackPressed();
+                    } else if (isSearchFieldAt(event.getX(), event.getY())) {
+                        if (isSearchMicrophoneAt(event.getX(), event.getY())) {
+                            session.startSearchDictation();
+                        } else {
+                            startLocalInput();
+                        }
                     } else if (hit != null && hit.bounds.contains(event.getX(), event.getY())) {
                         activateHit(hit);
                     }
@@ -2118,8 +2369,16 @@ final class HostRootView extends FrameLayout {
             Template template = wrapper == null ? null : wrapper.getTemplate();
             if (!(template instanceof SearchTemplate)) return false;
             float top = contentTop() + 10;
-            return x >= dp(20) && x <= getWidth() - dp(20)
-                    && y >= top && y <= top + dp(62);
+            return x >= searchFieldLeft() && x <= searchFieldRight()
+                    && y >= top && y <= top + 44;
+        }
+
+        private boolean isSearchMicrophoneAt(float x, float y) {
+            Template template = wrapper == null ? null : wrapper.getTemplate();
+            if (!(template instanceof SearchTemplate)) return false;
+            float top = contentTop() + 10;
+            return x >= searchFieldRight() - dp(70) && x <= searchFieldRight() - dp(12)
+                    && y >= top && y <= top + 44;
         }
 
         @Override
@@ -2131,7 +2390,13 @@ final class HostRootView extends FrameLayout {
                     distance = event.getAxisValue(MotionEvent.AXIS_VSCROLL);
                 }
                 if (distance != 0) {
-                    scrollListBy(distance * dp(54));
+                    int steps = Math.max(1, Math.round(Math.abs(distance)));
+                    int itemDelta = distance < 0 ? steps : -steps;
+                    if (wrapper != null && wrapper.getTemplate() instanceof GridTemplate) {
+                        itemDelta *= gridColumns();
+                    }
+                    rotaryFocusActive = true;
+                    moveRotaryFocus(itemDelta);
                     return true;
                 }
             }
@@ -2154,6 +2419,7 @@ final class HostRootView extends FrameLayout {
                 return true;
             }
             if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
+            rotaryFocusActive = true;
             if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER
                     || keyCode == KeyEvent.KEYCODE_ENTER) {
                 return activateRotaryTarget();
@@ -2161,12 +2427,14 @@ final class HostRootView extends FrameLayout {
             if (isScrollableTemplate()) {
                 if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN
                         || keyCode == KeyEvent.KEYCODE_PAGE_DOWN) {
-                    scrollListBy(-dp(72));
+                    moveRotaryFocus(wrapper != null && wrapper.getTemplate() instanceof GridTemplate
+                            ? gridColumns() : 1);
                     return true;
                 }
                 if (keyCode == KeyEvent.KEYCODE_DPAD_UP
                         || keyCode == KeyEvent.KEYCODE_PAGE_UP) {
-                    scrollListBy(dp(72));
+                    moveRotaryFocus(wrapper != null && wrapper.getTemplate() instanceof GridTemplate
+                            ? -gridColumns() : -1);
                     return true;
                 }
             }

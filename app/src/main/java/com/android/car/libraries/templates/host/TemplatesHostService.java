@@ -39,6 +39,9 @@ import android.util.Log;
 import android.view.Display;
 import android.view.Surface;
 import android.view.SurfaceControlViewHost;
+import android.speech.RecognitionListener;
+import android.speech.RecognizerIntent;
+import android.speech.SpeechRecognizer;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
@@ -86,6 +89,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.util.ArrayList;
 
 /**
  * Small, open-source AndroidX Car App templates host for AAOS.
@@ -243,6 +247,7 @@ public final class TemplatesHostService extends Service {
         private final androidx.car.app.activity.renderer.IProxyInputConnection inputConnection =
                 new SearchInputConnection();
         private MicrophoneSession microphoneSession;
+        private SpeechRecognizer searchDictationRecognizer;
         private Insets windowInsets = Insets.NONE;
         private Insets stableInsets = Insets.NONE;
 
@@ -315,6 +320,95 @@ public final class TemplatesHostService extends Service {
                 activity.onStopInput();
             } catch (RemoteException e) {
                 Log.e(TAG, "Unable to stop car search input", e);
+            }
+        }
+
+        void startSearchDictation() {
+            if (rootView == null || currentTemplate == null
+                    || !(currentTemplate.getTemplate() instanceof androidx.car.app.model.SearchTemplate)) {
+                return;
+            }
+            stopSearchDictation();
+            rootView.templateView.stopLocalInput();
+            Log.i(TAG, "[DEBUG-VOICE] starting app-scoped search dictation for " + component);
+            rootView.showToast("Listening…");
+            ComponentName recognitionService = new ComponentName(
+                    "com.radiosound.caramelvoice",
+                    "com.radiosound.caramelvoice.SherpaRecognitionService");
+            try {
+                searchDictationRecognizer = SpeechRecognizer.createSpeechRecognizer(
+                        TemplatesHostService.this, recognitionService);
+                searchDictationRecognizer.setRecognitionListener(new RecognitionListener() {
+                    @Override public void onReadyForSpeech(Bundle params) {
+                        Log.i(TAG, "[DEBUG-VOICE] search dictation ready");
+                        if (rootView != null) rootView.showToast("Listening…");
+                    }
+
+                    @Override public void onBeginningOfSpeech() {
+                        Log.i(TAG, "[DEBUG-VOICE] search dictation speech started");
+                    }
+
+                    @Override public void onRmsChanged(float rmsdB) { }
+
+                    @Override public void onBufferReceived(byte[] buffer) { }
+
+                    @Override public void onEndOfSpeech() {
+                        Log.i(TAG, "[DEBUG-VOICE] search dictation speech ended");
+                        if (rootView != null) rootView.showToast("Processing…");
+                    }
+
+                    @Override public void onError(int error) {
+                        Log.w(TAG, "[DEBUG-VOICE] search dictation error=" + error);
+                        if (rootView != null) rootView.showToast("Voice search unavailable");
+                        stopSearchDictation();
+                    }
+
+                    @Override public void onResults(Bundle results) {
+                        ArrayList<String> values = results.getStringArrayList(
+                                SpeechRecognizer.RESULTS_RECOGNITION);
+                        String text = values == null || values.isEmpty() ? "" : values.get(0);
+                        Log.i(TAG, "[DEBUG-VOICE] search dictation result=" + text);
+                        if (rootView != null && !text.isEmpty()) {
+                            rootView.templateView.replaceSearchText(text);
+                            rootView.templateView.submitSearchText();
+                            rootView.showToast("Searching");
+                        }
+                        stopSearchDictation();
+                    }
+
+                    @Override public void onPartialResults(Bundle partialResults) {
+                        ArrayList<String> values = partialResults.getStringArrayList(
+                                SpeechRecognizer.RESULTS_RECOGNITION);
+                        if (rootView != null && values != null && !values.isEmpty()
+                                && !values.get(0).isEmpty()) {
+                            rootView.templateView.replaceSearchText(values.get(0));
+                        }
+                    }
+
+                    @Override public void onEvent(int eventType, Bundle params) { }
+                });
+                Intent request = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+                request.putExtra(RecognizerIntent.EXTRA_LANGUAGE, "en-US");
+                request.putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, "en-US");
+                request.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true);
+                request.putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, getPackageName());
+                searchDictationRecognizer.startListening(request);
+            } catch (RuntimeException exception) {
+                Log.e(TAG, "[DEBUG-VOICE] unable to start search dictation", exception);
+                if (rootView != null) rootView.showToast("Voice search unavailable");
+                stopSearchDictation();
+            }
+        }
+
+        void stopSearchDictation() {
+            if (searchDictationRecognizer != null) {
+                try {
+                    searchDictationRecognizer.cancel();
+                } catch (RuntimeException ignored) {
+                }
+                searchDictationRecognizer.destroy();
+                searchDictationRecognizer = null;
+                Log.i(TAG, "[DEBUG-VOICE] search dictation stopped");
             }
         }
 
@@ -487,6 +581,7 @@ public final class TemplatesHostService extends Service {
             appSurfaceCallback = null;
             currentTemplate = null;
             lastAppLocation = null;
+            stopSearchDictation();
             stopMicrophone();
         }
 
@@ -658,9 +753,11 @@ public final class TemplatesHostService extends Service {
 
         private void createSurface(SurfaceWrapper wrapper) {
             Log.i(TAG, "creating hosted surface " + wrapper.getWidth() + "x" + wrapper.getHeight());
-            if (surfaceHost != null) {
-                surfaceHost.release();
-            }
+            // Surface recreation is normal when CarAppActivity changes between
+            // templates or returns from the map task. Tear down the previous
+            // root first so its ImageReader releases the old app-owned buffer
+            // queue before we publish a replacement SurfaceContainer.
+            destroySurface();
             DisplayManager displayManager = (DisplayManager) getSystemService(DISPLAY_SERVICE);
             Display display = displayManager.getDisplay(wrapper.getDisplayId());
             if (display == null) {

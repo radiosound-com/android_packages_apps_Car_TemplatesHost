@@ -33,7 +33,12 @@ for contract in \
     'onSurfaceChanged' \
     'navigationStarted' \
     'navigationEnded' \
-    'updateTrip'; do
+    'updateTrip' \
+    'getDestinationTravelEstimate' \
+    'drawDestinationTravelEstimate' \
+    'getRemainingDistance' \
+    'getRemainingTimeSeconds' \
+    'getArrivalTimeAtDestination'; do
     if ! rg -q "$contract" "$SERVICE" "$VIEW"; then
         echo "FAIL: renderer contract is not covered: $contract" >&2
         exit 1

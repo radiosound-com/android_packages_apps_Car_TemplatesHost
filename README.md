@@ -82,7 +82,8 @@ adb shell am start -W -n com.android.car.libraries.templates.conformance/android
 ```
 
 Supported modes are `grid`, `long-message`, `sign-in`, `tabs`, `sections`,
-`place-map`, `route-preview`, `media`, `list`, `pane`, `message`, and `search`.
+`place-map`, `route-preview`, `navigation`, `media`, `list`, `pane`,
+`message`, and `search`.
 
 After installing the conformance APK, the complete AVD matrix is:
 
