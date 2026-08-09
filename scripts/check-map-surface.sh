@@ -5,8 +5,17 @@ ADB="${ADB:-adb}"
 OUTPUT="${1:-/tmp/caramel-host-map-surface.png}"
 
 "$ADB" wait-for-device
-"$ADB" shell am force-stop com.android.car.carlauncher
+if [[ "${RESET_LAUNCHER:-0}" == "1" ]]; then
+    # A force-stop is useful for a one-time cold-start check, but repeating it
+    # leaves the launcher TaskView in a paused state on this AAOS profile.
+    "$ADB" shell am force-stop com.android.car.carlauncher
+fi
 "$ADB" shell am start -W -n com.android.car.carlauncher/.CarLauncher >/dev/null
+# The AAOS launcher keeps the map TaskView paused until the selected map app's
+# dock tile is activated. On this 1080x600 profile OsmAnd is the orange tile
+# centered at (660,565); this is the same user-visible entry action used for
+# the Automotive screenshots.
+"$ADB" shell input tap 660 565
 sleep "${WAIT_SECONDS:-8}"
 "$ADB" exec-out screencap -p > "$OUTPUT"
 

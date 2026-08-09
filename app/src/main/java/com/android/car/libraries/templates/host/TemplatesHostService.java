@@ -240,6 +240,10 @@ public final class TemplatesHostService extends Service {
         private boolean appBound;
         private SurfaceControlViewHost surfaceHost;
         private HostRootView rootView;
+        private IBinder hostedSurfaceToken;
+        private int hostedSurfaceDisplayId = -1;
+        private int hostedSurfaceWidth;
+        private int hostedSurfaceHeight;
         private TemplateWrapper currentTemplate;
         private android.location.Location lastAppLocation;
         private android.view.inputmethod.EditorInfo searchEditorInfo =
@@ -565,10 +569,7 @@ public final class TemplatesHostService extends Service {
                     Log.e(TAG, "Unable to stop terminated car search input", e);
                 }
             }
-            if (surfaceHost != null) {
-                surfaceHost.release();
-                surfaceHost = null;
-            }
+            destroySurface();
             if (appBound) {
                 try {
                     unbindService(appConnection);
@@ -752,7 +753,24 @@ public final class TemplatesHostService extends Service {
         }
 
         private void createSurface(SurfaceWrapper wrapper) {
-            Log.i(TAG, "creating hosted surface " + wrapper.getWidth() + "x" + wrapper.getHeight());
+            int width = Math.max(1, wrapper.getWidth());
+            int height = Math.max(1, wrapper.getHeight());
+            IBinder hostToken = wrapper.getHostToken();
+            if (surfaceHost != null && rootView != null
+                    && sameHostToken(hostToken, hostedSurfaceToken)
+                    && wrapper.getDisplayId() == hostedSurfaceDisplayId
+                    && width == hostedSurfaceWidth && height == hostedSurfaceHeight) {
+                // AndroidX may replay the current surface during a renderer
+                // lifecycle transition. Reusing an identical host token and
+                // size avoids tearing down a healthy ImageReader while the
+                // app is still drawing its first frame.
+                Log.i(TAG, "ignoring duplicate hosted surface " + width + "x" + height);
+                if (currentTemplate != null) {
+                    rootView.render(currentTemplate);
+                }
+                return;
+            }
+            Log.i(TAG, "creating hosted surface " + width + "x" + height);
             // Surface recreation is normal when CarAppActivity changes between
             // templates or returns from the map task. Tear down the previous
             // root first so its ImageReader releases the old app-owned buffer
@@ -782,9 +800,12 @@ public final class TemplatesHostService extends Service {
             }
             rootView = new HostRootView(displayContext, surfaceDensityDpi, this, appIcon);
             rootView.setWindowInsets(windowInsets, stableInsets);
-            surfaceHost = new SurfaceControlViewHost(displayContext, display, wrapper.getHostToken());
-            surfaceHost.setView(rootView, Math.max(1, wrapper.getWidth()),
-                    Math.max(1, wrapper.getHeight()));
+            surfaceHost = new SurfaceControlViewHost(displayContext, display, hostToken);
+            hostedSurfaceToken = hostToken;
+            hostedSurfaceDisplayId = wrapper.getDisplayId();
+            hostedSurfaceWidth = width;
+            hostedSurfaceHeight = height;
+            surfaceHost.setView(rootView, width, height);
             try {
                 activity.setSurfacePackage(Bundleable.create(surfaceHost.getSurfacePackage()));
             } catch (RemoteException | BundlerException e) {
@@ -804,6 +825,14 @@ public final class TemplatesHostService extends Service {
                 surfaceHost.release();
                 surfaceHost = null;
             }
+            hostedSurfaceToken = null;
+            hostedSurfaceDisplayId = -1;
+            hostedSurfaceWidth = 0;
+            hostedSurfaceHeight = 0;
+        }
+
+        private boolean sameHostToken(@Nullable IBinder left, @Nullable IBinder right) {
+            return left == right || (left != null && left.equals(right));
         }
 
         private void handleLifecycle(int event) {
