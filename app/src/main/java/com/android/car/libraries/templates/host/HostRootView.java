@@ -1045,6 +1045,7 @@ final class HostRootView extends FrameLayout {
                 }
                 float rowHeight = !hasText ? dp(62)
                         : dp(textLength > 90 ? 122 : 96);
+                float textLeft = row.getImage() == null ? dp(88) : dp(132);
                 // Toggle rows are rendered as controls rather than rotary-focus
                 // selections. The stock host does not outline the first switch
                 // when the list is initially shown; ordinary clickable rows in
@@ -1053,11 +1054,15 @@ final class HostRootView extends FrameLayout {
                     drawSelectionPanel(canvas, 54, rowTop, getWidth() - 54, rowTop + rowHeight);
                 }
                 first = false;
-                text(canvas, textOf(row.getTitle()), dp(88), rowTop + dp(40), 20,
+                if (row.getImage() != null) {
+                    drawSuppliedRowIcon(canvas, row.getImage(), dp(88),
+                            rowTop + rowHeight / 2f, dp(36));
+                }
+                text(canvas, textOf(row.getTitle()), textLeft, rowTop + dp(40), 20,
                         row.isEnabled() ? TEXT : MUTED);
-                    float textY = rowTop + dp(69);
+                float textY = rowTop + dp(69);
                 for (CarText subtext : row.getTexts()) {
-                    textY = drawWrappedText(canvas, textOf(subtext), dp(88), textY,
+                    textY = drawWrappedText(canvas, textOf(subtext), textLeft, textY,
                             // Leave the same right-side breathing room as the
                             // stock settings host so long descriptions wrap
                             // before the trailing words instead of running
@@ -1477,8 +1482,9 @@ final class HostRootView extends FrameLayout {
                 float rowTop = top + index * dp(84);
                 float rowBottom = rowTop + dp(84);
                 if (rowTop >= panelBottom()) break;
-                if (withIcons) {
-                    drawRowIcon(canvas, index, left + dp(44), rowTop + dp(42));
+                if (withIcons && row.getImage() != null) {
+                    drawSuppliedRowIcon(canvas, row.getImage(),
+                            left + dp(44), rowTop + dp(42), dp(40));
                 }
                 text(canvas, textOf(row.getTitle()), left + dp(94), rowTop + dp(53),
                         dp(27), row.isEnabled() ? TEXT : MUTED);
@@ -1494,91 +1500,22 @@ final class HostRootView extends FrameLayout {
             }
         }
 
-        private void drawRowIcon(Canvas canvas, int index, float x, float y) {
-            paint.setColor(ICON);
-            paint.setStyle(Paint.Style.STROKE);
-            paint.setStrokeWidth(dp(3));
-            paint.setStrokeCap(Paint.Cap.ROUND);
-            switch (index) {
-                case 0:
-                    PathHelper.drawNavigationArrow(canvas, paint, x, y, dp(16));
-                    break;
-                case 1:
-                    drawHistoryIcon(canvas, x + dp(4), y);
-                    break;
-                case 2:
-                    canvas.drawCircle(x, y, dp(14), paint);
-                    paint.setStyle(Paint.Style.FILL);
-                    text(canvas, "i", x - dp(4), y + dp(8), dp(23), ICON);
-                    break;
-                case 3:
-                    PathHelper.drawStar(canvas, paint, x, y, dp(16));
-                    break;
-                case 4:
-                    canvas.drawLine(x - dp(8), y - dp(15), x - dp(8), y + dp(15), paint);
-                    PathHelper.drawFlag(canvas, paint, x - dp(5), y - dp(11), dp(17));
-                    break;
-                default:
-                    canvas.drawCircle(x - dp(7), y, dp(5), paint);
-                    canvas.drawCircle(x + dp(7), y, dp(5), paint);
-                    canvas.drawLine(x - dp(2), y - dp(5), x + dp(2), y - dp(5), paint);
-                    canvas.drawLine(x - dp(2), y + dp(5), x + dp(2), y + dp(5), paint);
-                    break;
+        private void drawSuppliedRowIcon(Canvas canvas,
+                                         androidx.car.app.model.CarIcon carIcon,
+                                         float centerX, float centerY, float size) {
+            if (carIcon == null) return;
+            try {
+                Drawable drawable = carIcon.getIcon().loadDrawable(getContext());
+                if (drawable != null) {
+                    int half = Math.round(size / 2);
+                    drawable.setBounds(Math.round(centerX - half), Math.round(centerY - half),
+                            Math.round(centerX + half), Math.round(centerY + half));
+                    drawable.draw(canvas);
+                }
+            } catch (RuntimeException ignored) {
+                // Leave the slot empty if an app-supplied icon cannot be loaded;
+                // do not substitute an unrelated index-based glyph.
             }
-            paint.setStrokeCap(Paint.Cap.BUTT);
-            paint.setStyle(Paint.Style.FILL);
-        }
-
-        private void drawHistoryIcon(Canvas canvas, float x, float y) {
-            float unit = getWidth() / 1080f;
-            float left = x - unit * 18f;
-            float top = y - unit * 18f;
-            paint.setColor(ICON);
-            paint.setStyle(Paint.Style.FILL);
-
-            Path loop = new Path();
-            loop.moveTo(left + unit * 28.5f, top + unit * 18f);
-            loop.cubicTo(left + unit * 28.5f, top + unit * 23.799f,
-                    left + unit * 23.799f, top + unit * 28.5f,
-                    left + unit * 18f, top + unit * 28.5f);
-            loop.cubicTo(left + unit * 15.3998f, top + unit * 28.5f,
-                    left + unit * 13.0204f, top + unit * 27.5549f,
-                    left + unit * 11.1865f, top + unit * 25.9894f);
-            loop.lineTo(left + unit * 9.1285f, top + unit * 28.176f);
-            loop.cubicTo(left + unit * 11.501f, top + unit * 30.2461f,
-                    left + unit * 14.604f, top + unit * 31.5f,
-                    left + unit * 18f, top + unit * 31.5f);
-            loop.cubicTo(left + unit * 25.4558f, top + unit * 31.5f,
-                    left + unit * 31.5f, top + unit * 25.4558f,
-                    left + unit * 31.5f, top + unit * 18f);
-            loop.cubicTo(left + unit * 31.5f, top + unit * 10.5442f,
-                    left + unit * 25.4558f, top + unit * 4.5f,
-                    left + unit * 18f, top + unit * 4.5f);
-            loop.cubicTo(left + unit * 10.5442f, top + unit * 4.5f,
-                    left + unit * 4.5f, top + unit * 10.5442f,
-                    left + unit * 4.5f, top + unit * 18f);
-            loop.lineTo(left, top + unit * 18f);
-            loop.lineTo(left + unit * 6f, top + unit * 25.5f);
-            loop.lineTo(left + unit * 12f, top + unit * 18f);
-            loop.lineTo(left + unit * 7.5f, top + unit * 18f);
-            loop.cubicTo(left + unit * 7.5f, top + unit * 12.201f,
-                    left + unit * 12.201f, top + unit * 7.5f,
-                    left + unit * 18f, top + unit * 7.5f);
-            loop.cubicTo(left + unit * 23.799f, top + unit * 7.5f,
-                    left + unit * 28.5f, top + unit * 12.201f,
-                    left + unit * 28.5f, top + unit * 18f);
-            loop.close();
-            canvas.drawPath(loop, paint);
-
-            Path hands = new Path();
-            hands.moveTo(left + unit * 16.5f, top + unit * 13.5f);
-            hands.lineTo(left + unit * 16.5f, top + unit * 20.3028f);
-            hands.lineTo(left + unit * 21.668f, top + unit * 23.7481f);
-            hands.lineTo(left + unit * 23.332f, top + unit * 21.2519f);
-            hands.lineTo(left + unit * 19.5f, top + unit * 18.6972f);
-            hands.lineTo(left + unit * 19.5f, top + unit * 13.5f);
-            hands.close();
-            canvas.drawPath(hands, paint);
         }
 
         private void drawMapActionStrip(Canvas canvas,
@@ -1861,15 +1798,19 @@ final class HostRootView extends FrameLayout {
                 if (!(item instanceof Row)) continue;
                 Row row = (Row) item;
                 int h = row.getTexts().isEmpty() ? 62 : 72;
+                int textLeft = x + (row.getImage() == null ? 20 : 60);
                 if (first) {
                     drawSelectionPanel(canvas, x - 12, y, x + width + 12, y + h);
                     first = false;
                 }
-                text(canvas, textOf(row.getTitle()), x + 20, y + 30, 19,
+                if (row.getImage() != null) {
+                    drawSuppliedRowIcon(canvas, row.getImage(), x + 20, y + h / 2f, dp(36));
+                }
+                text(canvas, textOf(row.getTitle()), textLeft, y + 30, 19,
                         row.isEnabled() ? TEXT : MUTED);
                 int textY = y + 56;
                 for (CarText subtext : row.getTexts()) {
-                    text(canvas, textOf(subtext), x + 20, textY, 14, MUTED);
+                    text(canvas, textOf(subtext), textLeft, textY, 14, MUTED);
                     textY += 18;
                 }
                 paint.setColor(DIVIDER);
@@ -1888,11 +1829,16 @@ final class HostRootView extends FrameLayout {
                 if (!(item instanceof Row)) continue;
                 Row row = (Row) item;
                 float rowHeight = row.getTexts().isEmpty() ? dp(62) : dp(96);
-                text(canvas, textOf(row.getTitle()), x + dp(20), rowTop + dp(40), 20,
+                float textLeft = x + (row.getImage() == null ? dp(20) : dp(60));
+                if (row.getImage() != null) {
+                    drawSuppliedRowIcon(canvas, row.getImage(), x + dp(20),
+                            rowTop + rowHeight / 2f, dp(36));
+                }
+                text(canvas, textOf(row.getTitle()), textLeft, rowTop + dp(40), 20,
                         row.isEnabled() ? TEXT : MUTED);
                 float textY = rowTop + dp(69);
                 for (CarText subtext : row.getTexts()) {
-                    textY = drawWrappedText(canvas, textOf(subtext), x + dp(20), textY,
+                    textY = drawWrappedText(canvas, textOf(subtext), textLeft, textY,
                             width - dp(30), dp(21), MUTED);
                 }
                 paint.setColor(DIVIDER);
