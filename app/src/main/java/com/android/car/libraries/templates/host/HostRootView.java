@@ -1156,8 +1156,16 @@ final class HostRootView extends FrameLayout {
             listMaxScroll = Math.max(0, contentEnd - listBottom);
             drawScrollChevron(canvas, dp(42), listTop + dp(40), true);
             drawScrollChevron(canvas, dp(42), listBottom - dp(40), false);
-            drawAction(canvas, template.getHeaderAction(), 24, contentTop() + 10, 174,
-                    contentTop() + 62);
+            if (hasBackHeader) {
+                // SearchTemplate's BACK action is a leading header control,
+                // not a regular action button. Keep it in its own slot so it
+                // cannot paint over or steal input from the search field.
+                drawBackArrow(canvas, 24 + dp(8), top + dp(27));
+                addBackHit(top);
+            } else {
+                drawAction(canvas, headerAction, 24, contentTop() + 10, 174,
+                        contentTop() + 62);
+            }
             drawActionStrip(canvas, template.getActionStrip());
         }
 
