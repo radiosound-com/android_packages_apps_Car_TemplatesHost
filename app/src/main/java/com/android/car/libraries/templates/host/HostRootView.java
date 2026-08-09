@@ -1145,7 +1145,11 @@ final class HostRootView extends FrameLayout {
 
         private void drawSearchTemplate(Canvas canvas, SearchTemplate template) {
             float top = contentTop() + 10;
-            drawSearchField(canvas, template.getSearchHint(), top);
+            Action headerAction = template.getHeaderAction();
+            boolean hasBackHeader = headerAction != null
+                    && headerAction.getType() == Action.TYPE_BACK;
+            drawSearchField(canvas, template.getSearchHint(), top,
+                    searchFieldLeft(hasBackHeader));
             float listTop = top + 50;
             float listBottom = contentBottom();
             canvas.save();
@@ -1996,9 +2000,24 @@ final class HostRootView extends FrameLayout {
             }
         }
 
-        private void drawSearchField(Canvas canvas, String hint, float top) {
-            float left = 24;
-            float right = getWidth() - 24;
+        private float searchFieldLeft(boolean hasBackHeader) {
+            return hasBackHeader ? 24 + dp(56) : 24;
+        }
+
+        private float searchFieldLeft() {
+            Template template = wrapper == null ? null : wrapper.getTemplate();
+            return searchFieldLeft(template instanceof SearchTemplate
+                    && ((SearchTemplate) template).getHeaderAction() != null
+                    && ((SearchTemplate) template).getHeaderAction().getType()
+                    == Action.TYPE_BACK);
+        }
+
+        private float searchFieldRight() {
+            return getWidth() - 24;
+        }
+
+        private void drawSearchField(Canvas canvas, String hint, float top, float left) {
+            float right = searchFieldRight();
             paint.setColor(PANEL_ALT);
             paint.setStyle(Paint.Style.FILL);
             canvas.drawRoundRect(left, top, right, top + 44, 24, 24, paint);
@@ -2384,8 +2403,8 @@ final class HostRootView extends FrameLayout {
             Template template = wrapper == null ? null : wrapper.getTemplate();
             if (!(template instanceof SearchTemplate)) return false;
             float top = contentTop() + 10;
-            return x >= dp(20) && x <= getWidth() - dp(20)
-                    && y >= top && y <= top + dp(62);
+            return x >= searchFieldLeft() && x <= searchFieldRight()
+                    && y >= top && y <= top + dp(44);
         }
 
         @Override
