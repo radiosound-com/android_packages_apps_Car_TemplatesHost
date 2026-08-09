@@ -45,4 +45,14 @@ for contract in \
     fi
 done
 
+if rg -q 'text\(canvas, "Settings"' "$VIEW"; then
+    echo "FAIL: back-enabled ListTemplate toolbar hard-codes Settings" >&2
+    exit 1
+fi
+
+if ! rg -q 'drawMapActionStrip\(canvas, template\.getActionStrip\(\), toolbarTop \+ dp\(40\)\)' "$VIEW"; then
+    echo "FAIL: ListTemplate action strip is not rendered in the toolbar" >&2
+    exit 1
+fi
+
 echo "PASS: AndroidX Car App 1.7 template and renderer contracts are covered"
