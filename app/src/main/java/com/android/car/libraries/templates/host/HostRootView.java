@@ -984,6 +984,7 @@ final class HostRootView extends FrameLayout {
         private void drawListTemplate(Canvas canvas, ListTemplate template) {
             float toolbarTop = contentTop();
             drawToolbar(canvas, template, toolbarTop);
+            drawMapActionStrip(canvas, template.getActionStrip(), toolbarTop + dp(40));
             float listTop = toolbarTop + dp(115) - listScrollOffset;
             float listBottom = contentBottom();
             float contentEnd;
@@ -1014,7 +1015,7 @@ final class HostRootView extends FrameLayout {
             if (back) {
                 drawBackArrow(canvas, dp(53), top + dp(40));
                 addBackHit(top);
-                text(canvas, "Settings", dp(88), top + dp(51), 24, TEXT);
+                text(canvas, textOf(template.getTitle()), dp(88), top + dp(51), 24, TEXT);
             } else {
                 text(canvas, textOf(template.getTitle()), 24, top + dp(51), 24, TEXT);
             }
