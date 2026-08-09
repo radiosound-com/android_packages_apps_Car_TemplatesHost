@@ -169,11 +169,11 @@ final class HostRootView extends FrameLayout {
         private final TemplatesHostService.RendererSession session;
         private final HandlerThread imageThread = new HandlerThread("CaramelTemplatesHost-MapImages");
         private final Handler imageHandler;
-        private ImageReader imageReader;
-        private Surface surface;
+        private volatile ImageReader imageReader;
+        private volatile Surface surface;
         private Bitmap pendingBitmap;
         private boolean bitmapDeliveryPosted;
-        private boolean ready;
+        private volatile boolean ready;
 
         MapSurfaceView(Context context, TemplatesHostService.RendererSession session) {
             super(context);
@@ -210,19 +210,23 @@ final class HostRootView extends FrameLayout {
         }
 
         private void onImageAvailable(ImageReader reader) {
+            // ImageReader callbacks already queued on the handler can arrive
+            // after a surface resize has installed a replacement reader. Do
+            // not acquire from that retired queue: doing so can exhaust the
+            // old reader's maxImages slots and leave the app rendering into
+            // an abandoned BufferQueue, which presents as a blank car map.
+            if (!ready || reader != imageReader) return;
             Image image = null;
-            if (ready) {
-                try {
-                    image = reader.acquireLatestImage();
-                    if (image != null) {
-                        Bitmap bitmap = copyImage(image);
-                        if (bitmap != null) postBitmap(bitmap);
-                    }
-                } catch (RuntimeException ignored) {
-                    // The reader may be closed while a frame is being delivered.
-                } finally {
-                    if (image != null) image.close();
+            try {
+                image = reader.acquireLatestImage();
+                if (image != null) {
+                    Bitmap bitmap = copyImage(image);
+                    if (bitmap != null) postBitmap(bitmap);
                 }
+            } catch (RuntimeException ignored) {
+                // The reader may be closed while a frame is being delivered.
+            } finally {
+                if (image != null) image.close();
             }
         }
 
@@ -276,8 +280,13 @@ final class HostRootView extends FrameLayout {
             ready = false;
             surface = null;
             if (imageReader != null) {
-                imageReader.close();
+                ImageReader retiredReader = imageReader;
                 imageReader = null;
+                // Detach the listener before closing the queue. A callback
+                // already posted to imageHandler is rejected by the reader
+                // identity check above, rather than touching a retired queue.
+                retiredReader.setOnImageAvailableListener(null, null);
+                retiredReader.close();
             }
             synchronized (this) {
                 if (pendingBitmap != null) pendingBitmap.recycle();
