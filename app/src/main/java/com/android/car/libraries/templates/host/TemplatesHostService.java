@@ -301,7 +301,18 @@ public final class TemplatesHostService extends Service {
         }
 
         void startInput() {
-            if (inputSession == this) return;
+            if (inputSession == this) {
+                // The first request can race the embedded TemplateSurfaceView
+                // becoming the served IME window. Re-issue the AndroidX
+                // request on a later field tap instead of treating that
+                // rejected show request as a completed input session.
+                try {
+                    activity.onStartInput();
+                } catch (RemoteException e) {
+                    Log.e(TAG, "Unable to restart car search input", e);
+                }
+                return;
+            }
             if (inputSession != null) {
                 try {
                     inputSession.activity.onStopInput();
@@ -786,6 +797,14 @@ public final class TemplatesHostService extends Service {
                 return;
             }
             Context displayContext = createDisplayContext(display);
+            // Views hosted by SurfaceControlViewHost need a window context so
+            // ViewConfiguration and InputMethodManager resolve against the
+            // embedded car window. A bare display context renders ordinary
+            // templates, but Android 16 rejects it during SearchTemplate IME
+            // relaunches and the keyboard transition falls back to the old
+            // template.
+            Context windowContext = displayContext.createWindowContext(
+                    display, android.view.WindowManager.LayoutParams.TYPE_APPLICATION, null);
             // The renderer wrapper reports the app-side density (171 dpi on the
             // emulator), but the stock host publishes the physical display
             // density (120 dpi) to the car app's map surface. Passing the
@@ -798,9 +817,9 @@ public final class TemplatesHostService extends Service {
                 // A renderer client may disappear between the handshake and
                 // surface creation; the host can still render without its icon.
             }
-            rootView = new HostRootView(displayContext, surfaceDensityDpi, this, appIcon);
+            rootView = new HostRootView(windowContext, surfaceDensityDpi, this, appIcon);
             rootView.setWindowInsets(windowInsets, stableInsets);
-            surfaceHost = new SurfaceControlViewHost(displayContext, display, hostToken);
+            surfaceHost = new SurfaceControlViewHost(windowContext, display, hostToken);
             hostedSurfaceToken = hostToken;
             hostedSurfaceDisplayId = wrapper.getDisplayId();
             hostedSurfaceWidth = width;

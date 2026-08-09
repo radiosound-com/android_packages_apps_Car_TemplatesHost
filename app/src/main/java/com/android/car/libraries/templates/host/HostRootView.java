@@ -41,7 +41,6 @@ import android.view.VelocityTracker;
 import android.view.inputmethod.BaseInputConnection;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
-import android.view.inputmethod.InputMethodManager;
 import android.widget.FrameLayout;
 
 import androidx.annotation.Nullable;
@@ -548,25 +547,16 @@ final class HostRootView extends FrameLayout {
         private void startLocalInput() {
             Template template = wrapper == null ? null : wrapper.getTemplate();
             if (!(template instanceof SearchTemplate)) return;
-            requestFocus();
-            InputMethodManager manager = (InputMethodManager) getContext()
-                    .getSystemService(Context.INPUT_METHOD_SERVICE);
-            if (manager != null) {
-                manager.restartInput(this);
-                postDelayed(() -> {
-                    if (hasFocus() && isAttachedToWindow()) {
-                        manager.showSoftInput(this, InputMethodManager.SHOW_IMPLICIT);
-                    }
-                }, 180);
-            }
+            // The actual IME belongs to CarAppActivity's TemplateSurfaceView.
+            // Ask the AndroidX renderer to enter input mode so it creates the
+            // proxy connection returned by RendererCallback; trying to attach
+            // a second IME directly to this SurfaceControlViewHost view causes
+            // the car task to relaunch while SearchTemplate is resizing.
+            session.startInput();
         }
 
         void stopLocalInput() {
-            InputMethodManager manager = (InputMethodManager) getContext()
-                    .getSystemService(Context.INPUT_METHOD_SERVICE);
-            if (manager != null && getWindowToken() != null) {
-                manager.hideSoftInputFromWindow(getWindowToken(), 0);
-            }
+            session.stopInput();
         }
 
         @Override public boolean onCheckIsTextEditor() {
@@ -697,7 +687,11 @@ final class HostRootView extends FrameLayout {
 
         private void drawMapWithContent(Canvas canvas, MapWithContentTemplate template) {
             drawContentPanel(canvas, template.getContentTemplate(), true);
-            drawActionStrip(canvas, template.getActionStrip());
+            // MapWithContentTemplate action-strip controls belong on the map
+            // surface. Rendering them through the generic bottom action-strip
+            // path turns icon-only controls into a misleading "Action" button
+            // and makes route preview look like an unfinished template.
+            drawMapActionStrip(canvas, template.getActionStrip(), panelTop() + dp(42));
         }
 
         private void drawPlaceListNavigation(Canvas canvas, PlaceListNavigationTemplate template) {
